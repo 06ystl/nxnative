@@ -32,10 +32,10 @@ void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry
     uint64_t old = atomic_exchange(&g_pad_btn, buttons); atomic_fetch_or(&g_pad_latch, buttons & ~old); atomic_store(&g_pad_axes, pack(lx, ly, rx, ry));
 }
 uint64_t dm_input_samples(void) { return (uint64_t)atomic_load(&g_sampling); }
-// DM_KEYS scripted input (for tests): "seconds:key[+key][~hold seconds][*count/interval seconds],...", e.g. "8:A,12:A,15:Down~0.5,16:A+B,40:A*80/2" (A every 2 s from 40 s on, 80 times). Key names A B X Y LS RS L R ZL ZR Plus Minus Left Up Right Down, left stick LLeft LUp LRight LDown;
+// DM_KEYS scripted input (for tests): "seconds:key[+key][~hold seconds][*count/interval seconds],...", e.g. "8:A,12:A,15:Down~0.5,16:A+B,40:A*80/2" (A every 2 s from 40 s on, 80 times). Key names A B X Y LS RS L R ZL ZR Plus Minus Left Up Right Down, left stick LLeft LUp LRight LDown, right stick RLeft RUp RRight RDown;
 //   held 0.15 s by default, at most 1024 steps (counted after repeats are expanded). Goes through the controller path (dm_pad_set), ORed with keyboard / touch, neither overrides the other. Times are counted from host start.
 //   An f before the time means a presented frame number ("f7600:A", and the repeat interval counts frames too): when the machine is busy seconds drift from the game's progress, frame numbers do not (used for the Zelda BotW opening route)
-typedef struct { double at, hold; uint64_t btn; int32_t lx, ly; int frame; } key_step;
+typedef struct { double at, hold; uint64_t btn; int32_t lx, ly, rx, ry; int frame; } key_step;
 #define KEY_STEPS 1024
 static key_step g_steps[KEY_STEPS]; static int g_nsteps;
 static void *keys_main(void *arg) {
@@ -44,7 +44,7 @@ static void *keys_main(void *arg) {
         for (;;) { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); double el = (t.tv_sec - t0.tv_sec) + (t.tv_nsec - t0.tv_nsec) / 1e9;
                    if (g_steps[i].frame ? (double)dm_guest_frame() >= g_steps[i].at : el >= g_steps[i].at) break; usleep(5000); }
         LOG("DM_KEYS：%s%.2f 按 %#llx（按住 %.2f s）", g_steps[i].frame ? "帧 " : "", g_steps[i].at, (unsigned long long)g_steps[i].btn, g_steps[i].hold);
-        dm_pad_set(g_steps[i].btn, g_steps[i].lx, g_steps[i].ly, 0, 0); usleep((useconds_t)(g_steps[i].hold * 1e6)); dm_pad_set(0, 0, 0, 0, 0);
+        dm_pad_set(g_steps[i].btn, g_steps[i].lx, g_steps[i].ly, g_steps[i].rx, g_steps[i].ry); usleep((useconds_t)(g_steps[i].hold * 1e6)); dm_pad_set(0, 0, 0, 0, 0);
     }
     return NULL;
 }
@@ -64,6 +64,8 @@ void hid_keys_init(void) {
             static const char *const sticks[4] = {"LLeft", "LUp", "LRight", "LDown"};
             static const int sx[4] = {-32767, 0, 32767, 0}, sy[4] = {0, 32767, 0, -32767};
             for (int d = 0; d < 4; d++) if (!strcasecmp(k, sticks[d])) { if (sx[d]) st.lx = sx[d]; if (sy[d]) st.ly = sy[d]; found = 1; }
+            static const char *const right_sticks[4] = {"RLeft", "RUp", "RRight", "RDown"};
+            for (int d = 0; d < 4; d++) if (!strcasecmp(k, right_sticks[d])) { if (sx[d]) st.rx = sx[d]; if (sy[d]) st.ry = sy[d]; found = 1; }
             if (!found) LOG("【红】DM_KEYS 不认识的键名：%s", k);
             k = plus ? plus + 1 : NULL; }
         for (int i = 0; i < rep && g_nsteps < KEY_STEPS; i++) { g_steps[g_nsteps] = st; g_steps[g_nsteps++].at = st.at + i * every; }

@@ -49,6 +49,9 @@ _Static_assert(DM_GAME_NVN_TEX_SLOTS <= 128 && DM_GAME_NVN_IMG_SLOTS <= 32 && DM
 
 static void warm_start(void);
 static void warm_claim(void);
+static void uniform_batch_finish(void);
+static uint64_t uniform_version_gpu(uint64_t address, uint64_t size);
+static int uniform_batch_draw_guard(void);
 
 static id<MTLDevice> g_dev;
 static NSMutableArray *g_l3_gpu_leaks;
@@ -372,6 +375,20 @@ void mtl_pool_del(const void *mem) {
 // Address → pool: the last hit first, then a binary search over indices sorted by start address, and a full linear scan only when that fails (pools overlapping).
 // The Legend of Zelda: Breath of the Wild keeps about 1760 memory pools alive and every buffer binding of every draw looks one up; the old full scan took about 4% of the submit thread's samples (mtl_gpu_addr 222 / 6 s). Adding / removing pools invalidates the index, which is re-sorted when next used. Caller holds g_mu
 static int *g_pidx; static int g_pidx_cap;
+// Exact-query cache, protected by g_mu with the pool index. Keep the last-hit
+// rule first so overlapping pools retain their existing selection semantics.
+// Pool changes invalidate every entry, including indices moved by deletion.
+#ifdef NVN_OPTIMIZATION_TEST
+static int g_test_pool_cache = TARGET_OS_OSX;
+#endif
+static struct { uint64_t address, length; int index_plus_one; } g_pool_lookup[1024];
+static inline int pool_cache_on(void) {
+#ifdef NVN_OPTIMIZATION_TEST
+    return g_test_pool_cache;
+#else
+    return TARGET_OS_OSX;
+#endif
+}
 static int pidx_cmp(const void *a, const void *b) { uintptr_t x = g_pools[*(const int *)a].lo, y = g_pools[*(const int *)b].lo; return x < y ? -1 : x > y; }
 static int pool_find(uint64_t addr, uint64_t len) {
     if (g_plast >= 0 && g_plast < g_npool && addr >= g_pools[g_plast].lo && addr + len <= g_pools[g_plast].hi) return g_plast;
@@ -379,12 +396,22 @@ static int pool_find(uint64_t addr, uint64_t len) {
         if (g_pidx_cap < g_npool) { g_pidx_cap = g_npool * 2; g_pidx = realloc(g_pidx, (size_t)g_pidx_cap * sizeof *g_pidx); }
         for (int i = 0; i < g_npool; i++) g_pidx[i] = i;
         qsort(g_pidx, (size_t)g_npool, sizeof *g_pidx, pidx_cmp); g_pidx_ok = 1;
+        memset(g_pool_lookup, 0, sizeof g_pool_lookup);
     }
+    int cached = pool_cache_on();
+    unsigned slot = (unsigned)((addr >> 4) ^ (addr >> 20) ^ len) & 1023;
+    if (cached && g_pool_lookup[slot].index_plus_one &&
+        g_pool_lookup[slot].address == addr && g_pool_lookup[slot].length == len)
+        return g_plast = g_pool_lookup[slot].index_plus_one - 1;
     int lo = 0, hi = g_npool - 1, hit = -1;   // the last one whose start ≤ addr
     while (lo <= hi) { int m = (lo + hi) / 2; if (g_pools[g_pidx[m]].lo <= addr) { hit = m; lo = m + 1; } else hi = m - 1; }
-    if (hit >= 0 && addr + len <= g_pools[g_pidx[hit]].hi) return g_plast = g_pidx[hit];
-    for (int i = 0; i < g_npool; i++) if (addr >= g_pools[i].lo && addr + len <= g_pools[i].hi) return g_plast = i;
-    return -1;
+    int found = hit >= 0 && addr + len <= g_pools[g_pidx[hit]].hi ? g_pidx[hit] : -1;
+    if (found < 0) for (int i = 0; i < g_npool; i++) if (addr >= g_pools[i].lo && addr + len <= g_pools[i].hi) { found = i; break; }
+    if (found >= 0) {
+        if (cached) { g_pool_lookup[slot].address = addr; g_pool_lookup[slot].length = len; g_pool_lookup[slot].index_plus_one = found + 1; }
+        g_plast = found;
+    }
+    return found;
 }
 int mtl_addr(uint64_t addr, uint64_t len, void **buf, uint64_t *off) {
     int ok = 0;
@@ -521,22 +548,72 @@ static inline void m4_end(id e) {
     if ([e conformsToProtocol:@protocol(MTL4CommandEncoder)]) [(id<MTL4CommandEncoder>)e barrierAfterStages:MTLStageAll beforeQueueStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
     [e endEncoding];
 }
-static inline id<MTL4RenderCommandEncoder> enc_r_begin(MTL4RenderPassDescriptor *d) { id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d]; [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice]; [e setArgumentTable:g_vt atStages:MTLRenderStageVertex]; [e setArgumentTable:g_ft atStages:MTLRenderStageFragment]; return e; }
+#ifdef NVN_OPTIMIZATION_TEST
+static int g_test_render_state_cache = TARGET_OS_OSX;
+#endif
+static inline int render_state_cache_on(void) {
+#ifdef NVN_OPTIMIZATION_TEST
+    return g_test_render_state_cache;
+#else
+    return TARGET_OS_OSX;
+#endif
+}
+// Dynamic render state belongs to an encoder. Compare exact values and reset
+// on every encoder creation, even if Metal reuses an encoder object's address.
+static struct {
+    __unsafe_unretained id encoder; unsigned valid;
+    MTLViewport viewport; MTLScissorRect scissor;
+    MTLCullMode cull; MTLWinding winding; MTLTriangleFillMode fill;
+    float bias[3], blend[4]; BOOL clip; uint32_t stencil;
+} g_render_state;
+#ifdef NVN_OPTIMIZATION_TEST
+static int g_test_binding_cache = TARGET_OS_OSX;
+#endif
+static inline int binding_cache_on(void) {
+#ifdef NVN_OPTIMIZATION_TEST
+    return g_test_binding_cache;
+#else
+    return TARGET_OS_OSX;
+#endif
+}
+static struct {
+    __unsafe_unretained id encoder;
+    uint32_t valid[2]; uint64_t address[2][31];
+} g_render_bindings;
+static inline int render_state_changed(id encoder, unsigned bit, void *cached, const void *value, size_t size) {
+    if (!render_state_cache_on()) { g_render_state.valid = 0; return 1; }
+    if (g_render_state.encoder != encoder) { g_render_state.encoder = encoder; g_render_state.valid = 0; }
+    if ((g_render_state.valid & bit) && !memcmp(cached, value, size)) return 0;
+    memcpy(cached, value, size); g_render_state.valid |= bit; return 1;
+}
+static inline id<MTL4RenderCommandEncoder> enc_r_begin(MTL4RenderPassDescriptor *d) { id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d]; g_render_state.encoder = e; g_render_state.valid = 0; g_render_bindings.encoder = e; g_render_bindings.valid[0] = g_render_bindings.valid[1] = 0; [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice]; [e setArgumentTable:g_vt atStages:MTLRenderStageVertex]; [e setArgumentTable:g_ft atStages:MTLRenderStageFragment]; return e; }
 static inline void enc_r_end(id e) { m4_end(e); }
 static inline void enc_r_pso(id<MTL4RenderCommandEncoder> e, id<MTLRenderPipelineState> p) { [e setRenderPipelineState:p]; }
 static inline void enc_r_dss(id<MTL4RenderCommandEncoder> e, id<MTLDepthStencilState> s) { [e setDepthStencilState:s]; }
-static inline void enc_r_viewport(id<MTL4RenderCommandEncoder> e, MTLViewport v) { [e setViewport:v]; }
-static inline void enc_r_scissor(id<MTL4RenderCommandEncoder> e, MTLScissorRect r) { [e setScissorRect:r]; }
-static inline void enc_r_cull(id<MTL4RenderCommandEncoder> e, MTLCullMode m) { [e setCullMode:m]; }
-static inline void enc_r_winding(id<MTL4RenderCommandEncoder> e, MTLWinding w) { [e setFrontFacingWinding:w]; }
-static inline void enc_r_fill(id<MTL4RenderCommandEncoder> e, MTLTriangleFillMode m) { [e setTriangleFillMode:m]; }
-static inline void enc_r_depth_bias(id<MTL4RenderCommandEncoder> e, float u, float s, float c) { [e setDepthBias:u slopeScale:s clamp:c]; }
-static inline void enc_r_depth_clip(id<MTL4RenderCommandEncoder> e, BOOL v) { [e setDepthClipMode:v ? MTLDepthClipModeClip : MTLDepthClipModeClamp]; }
-static inline void enc_r_stencil_ref(id<MTL4RenderCommandEncoder> e, uint32_t f, uint32_t b) { (void)b; [e setStencilReferenceValue:f]; }
-static inline void enc_r_blend_color(id<MTL4RenderCommandEncoder> e, float r, float g, float b, float a) { [e setBlendColorRed:r green:g blue:b alpha:a]; }
+static inline void enc_r_viewport(id<MTL4RenderCommandEncoder> e, MTLViewport v) { if (render_state_changed(e, 1, &g_render_state.viewport, &v, sizeof v)) [e setViewport:v]; }
+static inline void enc_r_scissor(id<MTL4RenderCommandEncoder> e, MTLScissorRect r) { if (render_state_changed(e, 2, &g_render_state.scissor, &r, sizeof r)) [e setScissorRect:r]; }
+static inline void enc_r_cull(id<MTL4RenderCommandEncoder> e, MTLCullMode m) { if (render_state_changed(e, 4, &g_render_state.cull, &m, sizeof m)) [e setCullMode:m]; }
+static inline void enc_r_winding(id<MTL4RenderCommandEncoder> e, MTLWinding w) { if (render_state_changed(e, 8, &g_render_state.winding, &w, sizeof w)) [e setFrontFacingWinding:w]; }
+static inline void enc_r_fill(id<MTL4RenderCommandEncoder> e, MTLTriangleFillMode m) { if (render_state_changed(e, 16, &g_render_state.fill, &m, sizeof m)) [e setTriangleFillMode:m]; }
+static inline void enc_r_depth_bias(id<MTL4RenderCommandEncoder> e, float u, float s, float c) { float v[3] = {u,s,c}; if (render_state_changed(e, 32, g_render_state.bias, v, sizeof v)) [e setDepthBias:u slopeScale:s clamp:c]; }
+static inline void enc_r_depth_clip(id<MTL4RenderCommandEncoder> e, BOOL v) { if (render_state_changed(e, 64, &g_render_state.clip, &v, sizeof v)) [e setDepthClipMode:v ? MTLDepthClipModeClip : MTLDepthClipModeClamp]; }
+static inline void enc_r_stencil_ref(id<MTL4RenderCommandEncoder> e, uint32_t f, uint32_t b) { (void)b; if (render_state_changed(e, 128, &g_render_state.stencil, &f, sizeof f)) [e setStencilReferenceValue:f]; }
+static inline void enc_r_blend_color(id<MTL4RenderCommandEncoder> e, float r, float g, float b, float a) { float v[4] = {r,g,b,a}; if (render_state_changed(e, 256, g_render_state.blend, v, sizeof v)) [e setBlendColorRed:r green:g blue:b alpha:a]; }
 static inline void enc_r_visibility(id<MTL4RenderCommandEncoder> e, MTLVisibilityResultMode m, NSUInteger o) { [e setVisibilityResultMode:m offset:o]; }
-static inline void enc_r_vbuf(id<MTL4RenderCommandEncoder> e, NSUInteger i, uint64_t gpu) { (void)e; [g_vt setAddress:gpu atIndex:i]; }
-static inline void enc_r_args(id<MTL4RenderCommandEncoder> e, MTLRenderStages s, uint64_t gpu, NSUInteger i) { (void)e; [(s == MTLRenderStageVertex ? g_vt : g_ft) setAddress:gpu atIndex:i]; }
+// Vertex streams and shader arguments share the vertex table, so they must
+// also share this cache. Only addresses are cached; buffer contents stay live.
+static inline void enc_r_address(id<MTL4RenderCommandEncoder> e, int fragment, NSUInteger i, uint64_t gpu) {
+    if (!binding_cache_on()) g_render_bindings.valid[0] = g_render_bindings.valid[1] = 0;
+    else if (i < 31) {
+        if (g_render_bindings.encoder != e) { g_render_bindings.encoder = e; g_render_bindings.valid[0] = g_render_bindings.valid[1] = 0; }
+        uint32_t bit = 1u << i;
+        if ((g_render_bindings.valid[fragment] & bit) && g_render_bindings.address[fragment][i] == gpu) return;
+        g_render_bindings.address[fragment][i] = gpu; g_render_bindings.valid[fragment] |= bit;
+    }
+    [(fragment ? g_ft : g_vt) setAddress:gpu atIndex:i];
+}
+static inline void enc_r_vbuf(id<MTL4RenderCommandEncoder> e, NSUInteger i, uint64_t gpu) { enc_r_address(e, 0, i, gpu); }
+static inline void enc_r_args(id<MTL4RenderCommandEncoder> e, MTLRenderStages s, uint64_t gpu, NSUInteger i) { enc_r_address(e, s != MTLRenderStageVertex, i, gpu); }
 static inline void enc_r_draw(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger v, NSUInteger n) { [e drawPrimitives:p vertexStart:v vertexCount:n]; }
 static inline void enc_r_draw_instanced(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger v, NSUInteger n, NSUInteger i, NSUInteger b) { [e drawPrimitives:p vertexStart:v vertexCount:n instanceCount:i baseInstance:b]; }
 static inline void enc_r_draw_indexed(id<MTL4RenderCommandEncoder> e, MTLPrimitiveType p, NSUInteger n, MTLIndexType t, uint64_t gpu, NSUInteger len, NSUInteger i, NSInteger bv, NSUInteger bi) { [e drawIndexedPrimitives:p indexCount:n indexType:t indexBuffer:gpu indexBufferLength:len instanceCount:i baseVertex:bv baseInstance:bi]; }
@@ -561,7 +638,8 @@ static uint64_t g_bw_lo[BW_MAX], g_bw_hi[BW_MAX]; static int g_bw_n, g_blit_ops;
 static id<MTL4ComputeCommandEncoder> blit_raw(void) { blit_note(); rp_end(); if (!g_blit) { ser_gate(); g_blit = enc_b_begin(g_cb); [g_blit barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice]; g_bw_n = 0; g_blit_ops = 0; } return g_blit; }
 static void blit_barrier(void) {
     static int off = -1; if (off < 0) { const char *e = getenv("DM_NVN_BLIT_ORDER"); off = e && !strcmp(e, "0"); if (off) MLOG("DM_NVN_BLIT_ORDER=0：拷贝编码器内不加屏障（诊断，会复现喷泉竖条）"); }
-    if (!off) [g_blit barrierAfterEncoderStages:MTLStageAll beforeEncoderStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
+    MTLStages stages = MTLStageDispatch | MTLStageBlit | MTLStageAccelerationStructure;
+    if (!off) [g_blit barrierAfterEncoderStages:stages beforeEncoderStages:stages visibilityOptions:MTL4VisibilityOptionDevice];
     g_bw_n = 0; g_blit_ops = 0; g_blit_barriers++;
 }
 uint64_t mtl_blit_barriers(void) { return g_blit_barriers; }
@@ -648,6 +726,17 @@ static uint64_t g_up_total_ns;   // Cumulative upload time (same source as the p
 #define GRING 1024
 static struct { _Atomic uint64_t frame, ns, t0, t1; _Atomic int pending; } g_gpu[GRING];   // t0 / t1: the frame's earliest GPUStart / latest GPUEnd (mach absolute time, ns)
 static _Atomic uint64_t g_cur_frame;
+// Production choices are fixed by platform/profile; tests can compare both paths.
+#ifdef NVN_OPTIMIZATION_TEST
+static int g_test_uniform_batch = TARGET_OS_OSX && DM_GAME_MAC_UNIFORM_BATCH;
+#endif
+static inline int uniform_batch_on(void) {
+#ifdef NVN_OPTIMIZATION_TEST
+    return g_test_uniform_batch;
+#else
+    return TARGET_OS_OSX && DM_GAME_MAC_UNIFORM_BATCH;
+#endif
+}
 // ---------- Same-process alternating measurement (DM_NVN_UB, off by default: without the environment variable the code below only adds one 'is it enabled' check) ----------
 // On a hot real device the system keeps adjusting power / frequency, and segment comparison (segments A and B each run for a minute) cannot resolve differences of <10%; within the same run, toggle by phase in turn and take differences of adjacent phase pairs, so the drift cancels.
 // DM_NVN_UB="name=item,item;name=item", one phase every DM_NVN_UB_N frames (default 180, minimum 60): even phases = baseline (nothing changed), odd phases take one category in turn. Each item of a category:
@@ -735,6 +824,7 @@ int mtl_gpu_span(uint64_t f, uint64_t *t0, uint64_t *t1) {
 static void rp_flush(void);
 static const char *cctx_snap(void);   // What is in this submission (printed into the failure line on error; defined before mtl_exec)
 uint64_t mtl_sub_commit(void) {
+    uniform_batch_finish();
     defer_fallback();   // Deferred merged pass: at the end of the submission there are still P draws not replayed (the normal path never gets here)
     rp_flush();
     if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
@@ -804,7 +894,7 @@ void mtl_drain(void) { present_drop_for_suspend(); mtl_present_flush(); mtl_init
 
 // ================= Render replay =================
 #include "../../host/front.h"
-static int g_red_once[84];
+static int g_red_once[85];
 #define RED_ONCE(k, ...) do { if (!g_red_once[k]++) MLOG("【红】" __VA_ARGS__); } while (0)
 // NVN vertex streams 0–15 → Metal vertex buffer slots: 0–13 go to 16–29 (30 is the constant fallback buffer), 14 and 15 to 14 and 15. Metal has only the 31 slots 0–30; translated shaders use only buffer(0) (the argument buffer),
 // and the host's own vertex functions read no vertex buffers. 13 Sentinels uses stream 15, and the old 16 + stream went out of range (Metal assertion: buffer index (31) must be < 31)
@@ -2097,7 +2187,7 @@ static void shmap_load(void) {
     warm_start();
 }
 
-@interface NvShader : NSObject { @public id<MTLFunction> fn; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, afr; const char *builtin; uint64_t logged; char key[24]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
+@interface NvShader : NSObject { @public id<MTLFunction> fn; nvn_refl rf; id<MTLArgumentEncoder> ae; NSUInteger arg_len; int stage, range_ro, uniform_ro, afr; const char *builtin; uint64_t logged; char key[24]; id<MTLBuffer> c1buf; uint64_t c1_gpu; size_t c1off;
     // The argument buffer encoded last time
     id<MTLBuffer> ab_buf; uint64_t ab_gpu; size_t ab_off; uint64_t ab_pass;   // ab_pass: serial of the render pass that encoded this argument block - reused only within the same pass (the arena holding a block from another pass / another submission may already have been reclaimed and rewritten)
     id<MTLLibrary> bflib; int bflib_tried; NSMutableDictionary<NSString *, id<MTLFunction>> *bffn; } @end   // bflib: readable-tile version <key>_bf (merge B step 2)
@@ -2235,6 +2325,7 @@ static NvShader *shader_load(NSString *pc, int stage) {
     char err[160];
     if (nvn_refl_from_json(j, &o->rf, err, sizeof err)) { MLOG("【红】着色器 %s 反射转换失败：%s", pc.UTF8String, err); return nil; }
     if (rt_range_on()) o->range_ro=rt_range_bindings_ro(j);
+    o->uniform_ro = rt_range_bindings_ro(j);
     o->fn = [lib newFunctionWithName:j[@"entry"]]; o->stage = stage; strlcpy(o->key, pc.UTF8String, sizeof o->key);
     if (o->rf.nb) {
         o->ae = [o->fn newArgumentEncoderWithBufferIndex:o->rf.abi];
@@ -2261,9 +2352,9 @@ static int rt_range_bindings_ro(NSDictionary *j) {
         if (![b isKindOfClass:[NSDictionary class]] || ![b[@"kind"] isKindOfClass:[NSString class]] || ![b[@"msl_type"] isKindOfClass:[NSString class]]) return 0;
         NSString *k=b[@"kind"], *t=b[@"msl_type"];
         if (b[@"rw"] && (![b[@"rw"] isKindOfClass:[NSNumber class]] || [b[@"rw"] boolValue])) return 0;
-        if ([k isEqual:@"cbuf"] || [k isEqual:@"c1"]) { if (![t hasPrefix:@"constant "]) return 0; }
+        if ([k isEqual:@"cbuf"] || [k isEqual:@"c1"] || [k isEqual:@"support"]) { if (![t hasPrefix:@"constant "]) return 0; }
         else if ([k isEqual:@"sbuf"]) { if (![b[@"rw"] isKindOfClass:[NSNumber class]] || [b[@"rw"] boolValue] || ![t hasPrefix:@"const device "]) return 0; }
-        else if ([k isEqual:@"samp"] || [k isEqual:@"sampt"]) { if (![t isEqual:@"sampler"]) return 0; }
+        else if ([k isEqual:@"samp"] || [k isEqual:@"sampt"] || [k isEqual:@"samp_tex"]) { if (![t isEqual:@"sampler"]) return 0; }
         else if ([k isEqual:@"tex"] || [k isEqual:@"tbuf"]) {
             if (![t hasPrefix:@"texture"] || ([t containsString:@"access::"] && ![t containsString:@"access::sample>"] && ![t containsString:@"access::read>"])) return 0; }
         else return 0;
@@ -2344,7 +2435,7 @@ void mtl_prog_release(prog_t *p) { if (p->serial) serial_del(p->serial); }
 // At registration the whole texture object is snapshotted (NVN semantics: the descriptor has been written into the pool); view: the MTLTexture for that ID (a view or the base texture, held via CFBridgingRetain) and the serial-table / guest-write generations at the time it was obtained
 typedef struct { tex_t t; int ok; view_t v; int has_v; void *view; uint64_t view_id, view_rid, view_ser, view_dirty;
                  void *alt, *alt_of; uint64_t alt_rid; uint8_t alt_type;   // alt: compatible view used when the shader's declared type differs from view (tex_fit), alt_of = the view it was built from
-                 void *ar, *ar_of; uint64_t ar_rid; } treg_t;              // ar: the alpha-from-red view for the profile's alpha_from_red shaders (tex_alpha_red), ar_of = the view it was built from
+                 void *ar, *ar_of; uint64_t ar_rid; } treg_t;              // ar: the layout-capture view for the profile's alpha_from_red shaders, ar_of = the view it was built from
 static treg_t *g_treg; static int g_ntreg;
 // Lock-free copy of texture ID → serial (the replay hot path only needs the serial: store lookahead index, binding set of the clear-only hoist): texture IDs are 20 bits, fixed 1M entries (BSS, only touched pages are used),
 // release write at registration, relaxed atomic read on the reader side, without entering g_rmu (the former h_ser locked and unlocked on every lookup, thousands of times per frame in the camp)
@@ -2477,12 +2568,17 @@ static id<MTLTexture> tex_fit(int tid, id<MTLTexture> t, MTLTextureType want, ui
     r->alt = (void *)CFBridgingRetain(v); r->alt_of = (__bridge void *)t; r->alt_type = (uint8_t)want; r->alt_rid = v.gpuResourceID._impl;
     *rid = r->alt_rid; return v;
 }
-// Alpha from red: the fragment shaders the game profile's alpha_from_red lists read a single-channel render target whose channel mapping is exactly (R, 0, 0, 1) as (R, 0, 0, R).
+// Layout capture channels, selected by the profile's existing alpha_from_red list.
+// Single-channel targets mapped (R, 0, 0, 1) are read as (R, 0, 0, R).
 // Breath of the Wild's layout captures: a layout pane marked CaptureOn (user data "A8", "CaptureScale" 0.5, "MultiFilter"; about 140 layouts) is drawn into an RGBA8 target, blurred at half size,
 // and its alpha copied into the red channel of an R8 texture the game builds with mapping (R, 0, 0, 1); the layout's panes then sample it in place of the FBLayout_00 placeholder.
 // Each HUD prompt bar (PaGuideKey*) draws, per key, a cream glow P_Glow_00 (aa209f57b133e862: colour from the Kumo64 cloud texture, alpha = min(cloud alpha, capture alpha), animated in
 // when the bar appears), then a black shadow P_Sh_00 (e6a88e12dbae9743: alpha = capture alpha), then the text. Read literally, the capture's alpha is always 1: the shadow is a hard-edged box
 // and the glow fills the whole rectangle with cloud (both seen on the iPhone); in Switch footage both follow the text. On the Mac (shrine, bar fade-in) the full list leaves only a glow around the words.
+// Two-channel captures store luminance in R and alpha in G: GameOver_00 copies
+// its white RGBA text and blurred alpha into RG8, registered as (R, G, 0, 1).
+// Layout sampling needs (R, R, R, G); using alpha = 1 fills the capture's entire
+// quad with the tint colour. Keep explicit channel mappings and asset textures.
 // Only render targets qualify (captures always are; asset and CPU-written textures are not), so the list can name every layout shader variant. DM_NVN_ALPHA_RED=0 turns it off, <keys,...> replaces the list. Caller holds g_rmu
 static char g_afr_keys[48][20]; static int g_afr_nk = -1;
 static int afr_want(NvShader *sh) {
@@ -2494,10 +2590,11 @@ static int afr_want(NvShader *sh) {
     }
     return sh->afr == 2;
 }
-static id<MTLTexture> tex_alpha_red(int tid, id<MTLTexture> t, uint64_t *rid) {
+static id<MTLTexture> tex_layout_capture(int tid, id<MTLTexture> t, uint64_t *rid) {
     MTLPixelFormat pf = t.pixelFormat; MTLTextureSwizzleChannels sw = t.swizzle;
-    if (pf != MTLPixelFormatR8Unorm && pf != MTLPixelFormatR16Unorm && pf != MTLPixelFormatR16Float && pf != MTLPixelFormatR32Float) return nil;
-    if (sw.red != MTLTextureSwizzleRed || sw.green != MTLTextureSwizzleZero || sw.blue != MTLTextureSwizzleZero || sw.alpha != MTLTextureSwizzleOne || tid <= 0 || tid >= g_ntreg) return nil;
+    int luminance_alpha = pf == MTLPixelFormatRG8Unorm;
+    if (!luminance_alpha && pf != MTLPixelFormatR8Unorm && pf != MTLPixelFormatR16Unorm && pf != MTLPixelFormatR16Float && pf != MTLPixelFormatR32Float) return nil;
+    if (sw.red != MTLTextureSwizzleRed || sw.green != (luminance_alpha ? MTLTextureSwizzleGreen : MTLTextureSwizzleZero) || sw.blue != MTLTextureSwizzleZero || sw.alpha != MTLTextureSwizzleOne || tid <= 0 || tid >= g_ntreg) return nil;
     id<MTLTexture> base = t.parentTexture ? t.parentTexture : t;
     if (!(base.usage & MTLTextureUsageRenderTarget)) return nil;   // packaged and CPU-written textures are built without render-target usage
     treg_t *r = &g_treg[tid];
@@ -2505,10 +2602,13 @@ static id<MTLTexture> tex_alpha_red(int tid, id<MTLTexture> t, uint64_t *rid) {
     treg_drop_ar(r);
     NSUInteger l0 = t.parentTexture ? t.parentRelativeLevel : 0, s0 = t.parentTexture ? t.parentRelativeSlice : 0;
     NSUInteger ns = t.textureType == MTLTextureType3D ? 1 : t.arrayLength * (t.textureType == MTLTextureTypeCube || t.textureType == MTLTextureTypeCubeArray ? 6 : 1);
-    id<MTLTexture> v = [base newTextureViewWithPixelFormat:pf textureType:t.textureType levels:NSMakeRange(l0, t.mipmapLevelCount) slices:NSMakeRange(s0, ns)
-                                                   swizzle:MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed, MTLTextureSwizzleZero, MTLTextureSwizzleZero, MTLTextureSwizzleRed)];
+    MTLTextureSwizzleChannels mapped = luminance_alpha
+        ? MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed, MTLTextureSwizzleRed, MTLTextureSwizzleRed, MTLTextureSwizzleGreen)
+        : MTLTextureSwizzleChannelsMake(MTLTextureSwizzleRed, MTLTextureSwizzleZero, MTLTextureSwizzleZero, MTLTextureSwizzleRed);
+    id<MTLTexture> v = [base newTextureViewWithPixelFormat:pf textureType:t.textureType levels:NSMakeRange(l0, t.mipmapLevelCount) slices:NSMakeRange(s0, ns) swizzle:mapped];
     if (!v) { RED_ONCE(82, "alpha 取红的视图建不出（贴图号 %d 格式 %lu）", tid, (unsigned long)pf); return nil; }
-    { static int once; if (!once++) MLOG("单通道贴图 alpha 取红：首例 贴图号 %d %lux%lu", tid, (unsigned long)t.width, (unsigned long)t.height); }
+    if (luminance_alpha) { static int once; if (!once++) MLOG("双通道布局贴图：亮度取红、alpha 取绿，首例 贴图号 %d %lux%lu", tid, (unsigned long)t.width, (unsigned long)t.height); }
+    else { static int once; if (!once++) MLOG("单通道贴图 alpha 取红：首例 贴图号 %d %lux%lu", tid, (unsigned long)t.width, (unsigned long)t.height); }
     r->ar = (void *)CFBridgingRetain(v); r->ar_of = (__bridge void *)t; r->ar_rid = v.gpuResourceID._impl;
     *rid = r->ar_rid; return v;
 }
@@ -3069,6 +3169,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
             void *mb; uint64_t mo, gpu;
             if (!u || !u->addr || !mtl_gpu_addr(u->addr, 1, &mb, &mo, &gpu)) { RED_ONCE(16, "阶段 %d cb%d 没有绑定 uniform 缓冲", nvn_stage, reg); continue; }
             use_rec("buf", u->addr, u->size, 0, NULL);
+            uint64_t version = uniform_version_gpu(u->addr, u->size); if (version) gpu = version;
             if (nvn_stage == 0 && reg == 0 && g_ui_moff != 0) { uint64_t pg = ui_mat_patch(u, mb, mo); if (pg) gpu = pg; }
             if (bl) {
                 PD("B %llu st%d cb reg%d addr=%#llx size=%llu pool=%#llx+%#llx f=%g,%g,%g,%g", g_stat_pass, nvn_stage, reg, (unsigned long long)u->addr, (unsigned long long)u->size,
@@ -3103,7 +3204,7 @@ static int encode_args_(id<MTLCommandEncoder> en, NvShader *sh, int nvn_stage, i
                        (unsigned long)(t.parentTexture ? t.parentRelativeLevel : 0), (unsigned long)t.mipmapLevelCount,
                        (unsigned long)(t.parentTexture ? t.parentRelativeSlice : 0), (unsigned long)t.arrayLength, (unsigned long)t.textureType, t ? (int)t.swizzle.red : 0, t ? (int)t.swizzle.green : 0, t ? (int)t.swizzle.blue : 0, t ? (int)t.swizzle.alpha : 0, (__bridge void *)(t.parentTexture ? t.parentTexture : t));
             if (t && t.textureType != (MTLTextureType)b->dtt) { uint64_t r2 = 0; id<MTLTexture> v = tex_fit(tid, t, (MTLTextureType)b->dtt, &r2); if (v) { t = v; trid = r2; } }
-            if (t && nvn_stage == 1 && afr_want(sh)) { uint64_t r2 = 0; id<MTLTexture> v = tex_alpha_red(tid, t, &r2); if (v) { t = v; trid = r2; } }   // see tex_alpha_red
+            if (t && nvn_stage == 1 && afr_want(sh)) { uint64_t r2 = 0; id<MTLTexture> v = tex_layout_capture(tid, t, &r2); if (v) { t = v; trid = r2; } }   // see tex_layout_capture
             if (!t) { t = dummy_tex(b->dtt, b->dpf); trid = g_dummy_tex_rid[b->dtt & 7][b->dpf & 3]; }
             slots[aid] = trid;
             USE(t, MTLResourceUsageRead);
@@ -4750,6 +4851,7 @@ static void fb_prepare(NvProg *pr) {
     if (g_fb_n) { g_fb_seq = g_draw_seq; args_dirty_all(); g_fb_rebind = 1; }
 }
 static void draw(const p_draw *dw, const p_draw_idx *di) {
+    uniform_batch_draw_guard();
     if (!S.prog) { RED_ONCE(18, "绘制前没有绑定程序"); PD("Z %llu 绘制跳过：没有绑定程序", g_stat_pass + !g_enc); return; }
     __unsafe_unretained NvProg *pr = prog_get(S.prog);
     if (g_ruler_truth == 0) {   // Ruler negative control (DM_NVN_RULER_NEG=<fragment key>): in the mode under test drop this shader's draws, and the ruler must report non-equivalence
@@ -4910,6 +5012,7 @@ frz_plain:;
     g_kd_force = kd_draw(pr, dw, di);
     if (pr->sh[0]) encode_args(en, pr->sh[0], 0, 1);
     if (pr->sh[1]) encode_args(en, pr->sh[1], 1, 0);
+    if (uniform_batch_draw_guard()) { draw(dw, di); return; }
     // Parameter binding captures the actual resources under the registry lock; if the version changed between the eligibility check and the binding, split and retry before any GPU draw.
     if (g_rt_range_active && (g_pass.reg_gen != g_reg_gen || g_pass.ser_gen != g_ser_gen || g_pass.range_dirty != nvn_dirty_now())) { rp_end(); draw(dw, di); return; }
     int prim = dw ? dw->prim : di->prim;
@@ -5702,11 +5805,14 @@ static void sub_cut(void) {
     if (!g_cuts++) MLOG("分段提交：首段在帧 %llu 通道 %llu 交出", (unsigned long long)f, (unsigned long long)g_stat_pass);
 }
 
+#include "nvn_uniform_batch.h"
+
 void mtl_exec(const uint8_t *p) {
     static int inited; if (!inited) { inited = 1; state_reset(); }
     static int dump_all = -1; if (dump_all < 0) dump_all = getenv("DM_NVN_PASSDUMP_ALL") != NULL;
     int trace = dump_all && passdump();   // Normal mode does not check the frame range per operation; the full command position is only used for the designated diagnostic frames
     for (;;) {
+        uniform_batch_boundary(p);
         op_hdr h; memcpy(&h, p, sizeof h);
         g_exec_cur = p;   // Scan start point of the store lookahead: the operation that ends the render pass (inclusive)
         if (p == g_defer_pend) { for (int gi = 0; gi < 4; gi++) if (g_defer_slots[gi].active && g_defer_slots[gi].p_end_op == p) g_defer_slots[gi].in_p = 0; g_defer_pend = NULL; }
@@ -5749,6 +5855,7 @@ void mtl_exec(const uint8_t *p) {
             case OP_COPY_B2B: { uint64_t s_, d, n; memcpy(&s_, a, 8); memcpy(&d, (const uint8_t *)a + 8, 8); memcpy(&n, (const uint8_t *)a + 16, 8);
                 PD("Y copy_b2b cmd=%p src=%#llx dst=%#llx bytes=%llu", p, (unsigned long long)s_, (unsigned long long)d, (unsigned long long)n); mtl_sub_copy(s_, d, n); break; }
             case OP_UPDATE_UB: { uint64_t d, n; memcpy(&d, a, 8); memcpy(&n, (const uint8_t *)a + 8, 8);
+                if (uniform_batch_update(p, d, n)) break;
                 PD("Y update_ub cmd=%p src=%#llx dst=%#llx bytes=%llu f=%g,%g,%g,%g", p, (unsigned long long)((const uint8_t *)a + 16), (unsigned long long)d, (unsigned long long)n,
                    n >= 4 ? ((const float *)((const uint8_t *)a + 16))[0] : 0.f, n >= 8 ? ((const float *)((const uint8_t *)a + 16))[1] : 0.f, n >= 12 ? ((const float *)((const uint8_t *)a + 16))[2] : 0.f, n >= 16 ? ((const float *)((const uint8_t *)a + 16))[3] : 0.f); mtl_sub_update((const uint8_t *)a + 16, d, n); break; }
             case OP_SET_RT: {

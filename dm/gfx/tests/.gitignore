@@ -43,3 +43,11 @@ t_ub
 t_ub.dSYM/
 t_dirty_race
 t_dirty_race.dSYM/
+t_uniform_batch
+t_uniform_batch.dSYM/
+t_render_state_cache
+t_render_state_cache.dSYM/
+t_binding_cache
+t_binding_cache.dSYM/
+t_layout_capture
+t_layout_capture.dSYM/

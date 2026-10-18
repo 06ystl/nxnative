@@ -1,4 +1,4 @@
-// Mac front end: with DM_WINDOW=1 open a window (CAMetalLayer, for the graphics backend to present frames) + keyboard → dm_input; the guest runs on a large-stack thread instead and the main thread belongs to AppKit.
+// Mac front end: with DM_WINDOW=1 open a window (CAMetalLayer, for the graphics backend to present frames) + keyboard and physical controller input; the guest runs on a large-stack thread instead and the main thread belongs to AppKit.
 // Without DM_WINDOW: the guest runs directly on the current thread, behaving the same as with no front end (windowless tests use this).
 // Key map (Nintendo layout): WASD left stick, arrow keys D-pad, J=A K=B U=X I=Y, Q=L E=R, Z=ZL C=ZR, F=press left stick G=press right stick, Return=+ Tab=−.
 #import <Cocoa/Cocoa.h>
@@ -6,6 +6,8 @@
 #import <Metal/Metal.h>
 #include "dm.h"
 #include "dm_input.h"
+#include "gamepad_mac.h"
+#include "input_focus_mac.h"
 #include "dm_uiscreen.h"
 void mtl_set_ui_rect_fn(void (*fn)(double *y, double *h));
 static void ui_rect_frac(double *fy, double *fh) { int x, y, w, h, rw = 0, rh = 0; dm_ui_rect(&x, &y, &w, &h); if (dm_screen_real(&rw, &rh) && rh > 0) { *fy = (double)y / rh; *fh = (double)h / rh; } }   // Same as front_ios.m: vertical position and height of the UI rectangle (as fractions of the frame height)
@@ -15,11 +17,15 @@ __attribute__((constructor)) static void ui_shift_reg(void) { mtl_set_ui_rect_fn
 #include <signal.h>
 
 static CAMetalLayer *g_layer;
+static NSWindow *g_window;
 static uint64_t g_btn;
 static int g_w, g_a, g_s, g_d;
 
 void *front_metal_layer(void) { return (__bridge void *)g_layer; }
-// The original game's 16:9 constants, behavior unchanged; DM_GAME_RES=<width>x<height> (docked mode; handheld scaled by 720/900) is only for side-by-side comparison with iOS widescreen
+// Resolution parameter values for games whose rewriter installs KRES0/KRES1
+// reads (currently D2R only). DM_GAME_RES sets docked dimensions; handheld uses
+// 4/5 of each dimension. BotW uses the separate verified loader presets in
+// resolution_mac.c; its rewritten modules have no KRES slots.
 uint64_t front_game_res(int docked) {
     unsigned w, h; const char *e = getenv("DM_GAME_RES");
     if (e && sscanf(e, "%ux%u", &w, &h) == 2) return docked ? (uint64_t)h << 32 | w : (uint64_t)(h * 4 / 5) << 32 | (w * 4 / 5 + 3) / 4 * 4;
@@ -29,6 +35,11 @@ uint64_t front_game_res(int docked) {
 static void push(void) {
     int32_t lx = (g_d - g_a) * 32767, ly = (g_w - g_s) * 32767;
     dm_input_set(g_btn, lx, ly, 0, 0);
+}
+static void input_active(int active) {
+    if (!active) { g_btn = 0; g_w = g_a = g_s = g_d = 0; push(); dm_touch_set(NULL, 0); }
+    dm_gamepad_mac_set_active(active);
+    dm_focus_set(active ? 1 : g_window.miniaturized ? 3 : 2);
 }
 static int key_bit(unsigned short code) {
     switch (code) {
@@ -64,7 +75,12 @@ void front_run(void (*guest)(void)) {
         NSWindow *win = [[NSWindow alloc] initWithContentRect:r
                                                     styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
                                                       backing:NSBackingStoreBuffered defer:NO];
+        g_window = win;
         win.title = @DM_GAME_NAME;   // the game profile's name (game name label)
+#ifdef DM_MAC_APP
+        win.title = [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleDisplayName"] ?: @DM_GAME_NAME;
+        win.collectionBehavior |= NSWindowCollectionBehaviorFullScreenPrimary;
+#endif
         NSView *v = win.contentView;
         v.wantsLayer = YES;
         g_layer = [CAMetalLayer layer];
@@ -77,6 +93,9 @@ void front_run(void (*guest)(void)) {
         [NSApp activateIgnoringOtherApps:YES];
         [NSEvent addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown | NSEventMaskKeyUp handler:^NSEvent *(NSEvent *e) {
             if (e.window != win) return e;   // Only swallow keys for the game window; other windows such as the software keyboard input box receive typing as usual
+#ifdef DM_MAC_APP
+            if (e.modifierFlags & NSEventModifierFlagCommand) return e;   // App menu shortcuts (Quit / Full Screen)
+#endif
             if (!e.isARepeat) on_key(e, e.type == NSEventTypeKeyDown);
             return nil;   // Swallow it to avoid the system beep
         }];
@@ -90,13 +109,20 @@ void front_run(void (*guest)(void)) {
             dm_touch_set(&t, 1); return nil;
         }];
         [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowWillCloseNotification object:win queue:nil
-                                                      usingBlock:^(NSNotification *n) { (void)n; exit(0); }];
+                                                      usingBlock:^(NSNotification *n) { (void)n;
+#ifdef DM_MAC_APP
+            [NSApp terminate:nil];
+#else
+            exit(0);
+#endif
+        }];
         // Lifecycle (hle.h / dm.h): focus lost → 2, focus regained → 1; minimized → 3 + audio paused + GPU suspended, restored → resume (followed by focus regained → 1)
         NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
-        [nc addObserverForName:NSWindowDidResignKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; if (!win.miniaturized) dm_focus_set(2); }];
-        [nc addObserverForName:NSWindowDidBecomeKeyNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_focus_set(1); }];
         [nc addObserverForName:NSWindowDidMiniaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_focus_set(3); dm_audio_suspend(1); dm_gfx_suspend(1); }];
         [nc addObserverForName:NSWindowDidDeminiaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(2); }];
+        dm_gamepad_mac_start();
+        static id inputFocus;
+        inputFocus = dm_mac_input_watch(NSApp, win, input_active);
         // Guest thread: 64 MiB stack (the Switch main thread stack is specified by npdm; the host gives plenty)
         static guest_arg ga; ga.fn = guest;
         pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 64u << 20);

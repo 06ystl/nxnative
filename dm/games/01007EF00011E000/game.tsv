@@ -30,6 +30,28 @@ build	v1114112	1.9.0	main=cd57b23fa4bbad65803d9788c01821ee	subsdk0=f39f4c431234c
 package	v1114112
 shader_versions	v1114112
 
+# Mac GPU uniform snapshots preserve draw values while avoiding pass splits.
+mac_uniform_batch	on
+
+# Mac resolution presets in the renderer's size setup, verified by disassembly.
+# Fields: main build, offset, original instruction, 1280x720 word, 1920x1080 word.
+# Update internal/output widths, output dimensions and crop together in both
+# operation modes. Keep the game's reference widths and timing logic unchanged.
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12660bc	0xd2a89e08	0xd2a89408	0xd2a89e08
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12660c8	0xf2e89908	0xf2e89408	0xf2e89e08
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12660d0	0xd280f008	0xd280a008	0xd280f008
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12660d4	0xf2c08708	0xf2c05a08	0xf2c08708
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12660f0	0x52808704	0x52805a04	0x52808704
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266104	0x5280f003	0x5280a003	0x5280f003
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266114	0xd2a89408	0xd2a89408	0xd2a89e08
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266118	0xf2e89408	0xf2e89408	0xf2e89e08
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266120	0xd280a008	0xd280a008	0xd280f008
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266124	0xf2c05a08	0xf2c05a08	0xf2c08708
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266134	0x52a88689	0x52a88689	0x52a890e9
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266140	0x52a89408	0x52a89408	0x52a89e08
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266180	0x5280a003	0x5280a003	0x5280f003
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266188	0x52805a04	0x52805a04	0x52808704
+
 # ---- 文件 | Files ----
 modules	main subsdk0 sdk
 romfs_marker	Pack/Bootup_Graphics.pack

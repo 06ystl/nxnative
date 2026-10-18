@@ -1,5 +1,6 @@
 // The four face buttons of a physical controller -> game keys: mapped by the letter printed on the button glyph (press whichever letter the
-// button button legend shows). Pure function, used by the front end dm_gamepad.m, checked by the host unit test tests/t_padmap.c.
+// button legend shows). Positional helper, checked by tests/t_padmap.c. The Mac
+// GameController path uses system-normalized button names directly, not this helper.
 //   The four face buttons given by the system (GameController) are defined by position, not by the letter on the button glyph:
 //   buttonA bottom, buttonB right, buttonX left, buttonY top.
 //   - Nintendo controllers (Switch Pro, Joy-Con): the glyphs are right A, bottom B, top X, left Y -- identical to the Switch as is.

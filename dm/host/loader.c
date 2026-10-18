@@ -9,6 +9,9 @@
 #include <mach-o/getsect.h>
 #include <mach-o/ldsyms.h>
 #include "hle.h"
+#if TARGET_OS_OSX
+#include "resolution_mac.h"
+#endif
 
 module_t g_mod[MAX_MOD];
 int g_nmod;
@@ -367,6 +370,7 @@ static uint8_t *slurp(const char *path, size_t *n) {
 static void map_image(module_t *m, const char *dir) {
     char path[1024]; snprintf(path, sizeof path, "%s/%s.patched.bin", dir, m->name);
     size_t sz; uint8_t *raw = slurp(path, &sz);
+    if (dm_resolution_mac_patch(m, raw, sz) < 0) die("Invalid Mac game resolution request");
     if (m->patch_off < 0) {
         // Patch area before the base: file = the first part of the image (text + ro + data) + patch area; bss and the key page are anonymous zero pages. The gap from the patch area's end to the base is left inaccessible (PROT_NONE)
         uint64_t pre = (uint64_t)-m->patch_off, fl = m->file_image_len;

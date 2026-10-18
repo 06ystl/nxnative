@@ -117,6 +117,10 @@ void dm_host_preload_start(int argc, char **argv) {
     if (pthread_create(&g_pre.th, &a, preload_thread, NULL)) die("dm_host_preload_start：起线程失败");
 }
 int main(int argc, char **argv) {
+#ifdef DM_MAC_APP
+    int dm_app_bootstrap(int *argc, char ***argv);
+    if (!dm_app_bootstrap(&argc, &argv)) return 1;
+#endif
     if (getenv("DM_PRELOAD")) dm_host_preload_start(argc, argv);   // Exercise the early-start path on Mac (on iOS it is called from the App's main())
     if (atomic_load(&g_pre.started)) {
         pthread_join(g_pre.th, NULL);
