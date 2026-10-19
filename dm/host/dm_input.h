@@ -16,6 +16,27 @@ uint64_t dm_input_samples(void);   // Cumulative number of times the game has sa
 // buttons are ORed and each axis uses the value with greater magnitude. The iOS frontend merges physical and touch input before calling dm_input_set.
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);
 
+// nn::hid::SixAxisSensorState ABI. Angular velocity and angle use revolutions;
+// acceleration is in g, delta_time in nanoseconds. Direction is a 3x3 basis.
+typedef struct {
+    uint64_t delta_time, sampling;
+    float acceleration[3], angular_velocity[3], angle[3], direction[3][3];
+    uint32_t attributes, reserved;
+} dm_sixaxis_state;
+_Static_assert(sizeof(dm_sixaxis_state) == 0x60, "SixAxisSensorState ABI");
+// Optional frontend motion source, independent of buttons/sticks. Returns 0
+// when unavailable/stale; read-only snapshots never integrate the same sample twice.
+extern int (*dm_motion_read)(dm_sixaxis_state *state, int fusion);
+
+// nn::hid::VibrationValue ABI: low/high amplitude (0..1) and frequency (Hz).
+// A frontend installs these before guest startup. Without a sink the original
+// no-vibration-device behavior remains. The send callback only publishes a snapshot;
+// it must not reenter HID or block on hardware.
+typedef struct { float amplitude_low, frequency_low, amplitude_high, frequency_high; } dm_vibration_value;
+_Static_assert(sizeof(dm_vibration_value) == 16, "VibrationValue ABI");
+extern void (*dm_vibration_send)(unsigned side, const dm_vibration_value *value);
+extern void (*dm_vibration_shutdown)(void);
+
 // Optional diagnostic DM_HID_RECEIPT_LOG=<writable JSONL path>: received samples of real GetNpadState returns.
 // Fields read_start_ns/time_ns use the same host now_ns(); the front-end publish window must use the same helper, and a read interval that spans a publish must not be force-matched.
 // State changes + at most one activity witness per second, limit_reached after 1024 entries; no file is written when the environment variable is not set.

@@ -1,7 +1,5 @@
 # nxnative
 
-[中文说明](#中文说明)
-
 Play your own Nintendo Switch games natively on iPhone and iPad. Bring your game (its NSP files) and your `prod.keys`; one script turns them into an IPA that you sideload.
 
 It is not an emulator: the game's own code runs directly on the Apple chip, with Switch graphics rebuilt on Metal. Nothing from any game is in this repository, and the project is not affiliated with Nintendo or any game publisher.
@@ -17,7 +15,7 @@ This project is built on other people's work:
 - **[LibHac](https://github.com/Thealexbarney/LibHac)**: reads NSPs and layers updates over the base game in `dm/tools/nx_extract`. **hactool** did the first extractions.
 - **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)**: SPIR-V to Metal Shading Language.
 - **deko3d** (zlib): its texture layout size algorithm is ported in `dm/gfx/nvn/nvn_tex.c`.
-- **libvpx** (VP9 movies), **stb_vorbis** (movie sound), **libdeflate**, **bcdec** and **NVIDIA FLIP** ship in `dm/third_party` with their licenses ([list](dm/third_party/README.md)).
+- **libvpx** (VP9 movies), **stb_vorbis** (movie sound), **libdeflate**, the **Vulkan headers** and **NVIDIA FLIP** ship in `dm/third_party` with their licenses ([list](dm/third_party/README.md)).
 - **Capstone**, **lz4**, **fontTools** and **XcodeGen** are used by the build.
 
 ## Games
@@ -32,14 +30,29 @@ All of these are tested on an iPhone and playable:
 | 13 Sentinels: Aegis Rim | base game + update 1.10 | ~5 GB | |
 | Super Mario 3D World + Bowser's Fury | base game + update 1.2.2 | ~3 GB | |
 | The Legend of Zelda: Breath of the Wild | base game + update 1.9.0 (+ DLC) | ~16 GB | Upgraded to 60 fps (30 fps on Switch) |
+| The Legend of Zelda: Link's Awakening | base game + update 1.1.0 | ~6 GB | |
+| Super Mario Odyssey | base game + update 1.4.1 | ~6 GB | |
 
-New, runs on the Mac, not yet tested on an iPhone: The Legend of Zelda: Link's Awakening (base game + update 1.1.0, ~6 GB).
+Being ported, playable on the Mac, with iPhone builds not tested yet:
 
-Needs iOS / iPadOS 26 or later. Other games aren't supported yet: for them the script writes a survey instead of an IPA.
+- Hades (base game + update 1.0.38233): the script cannot pack it yet.
+- Hyrule Warriors: Age of Calamity (base game + update 1.3.0, + DLC): up to its first battle.
+- Fire Emblem: Three Houses (base game + update 1.2.0, + DLC): through its prologue. While packing, the script starts the game on the Mac for a few seconds to collect the shaders it builds as it runs.
+
+| | |
+|:---:|:---:|
+| ![Super Mario Bros. Wonder](docs/images/super-mario-bros-wonder.jpg)<br>Super Mario Bros. Wonder | ![Fire Emblem Engage](docs/images/fire-emblem-engage.jpg)<br>Fire Emblem Engage |
+| ![Metroid Dread](docs/images/metroid-dread.jpg)<br>Metroid Dread | ![13 Sentinels: Aegis Rim](docs/images/13-sentinels.jpg)<br>13 Sentinels: Aegis Rim |
+| ![Super Mario 3D World + Bowser's Fury](docs/images/super-mario-3d-world.jpg)<br>Super Mario 3D World + Bowser's Fury | ![The Legend of Zelda: Breath of the Wild](docs/images/zelda-breath-of-the-wild.jpg)<br>The Legend of Zelda: Breath of the Wild |
+| ![The Legend of Zelda: Link's Awakening](docs/images/zelda-links-awakening.jpg)<br>The Legend of Zelda: Link's Awakening | ![Super Mario Odyssey](docs/images/super-mario-odyssey.jpg)<br>Super Mario Odyssey |
+
+Builds now target iOS / iPadOS 17 or later, with an experimental Metal 3 compatibility path on older systems. Supported iOS 26+ devices keep Metal 4. The iPhone results above were obtained on the original iOS 26 path; iOS 17 device testing is pending.
+
+Requires an iPhone 15 Pro or newer (A17 Pro chip or later) or an iPad with an M1 chip or later: the games' textures are BC-compressed, and older iPhones can't read that format. Other games aren't supported yet. For them the script writes a survey and still tries its best to pack an IPA, guessing the game's settings; such an IPA may not start.
 
 ## Pack an IPA
 
-**1. Get nxnative and its tools** (once, on a Mac with [Xcode](https://apps.apple.com/app/xcode/id497799835) and [Homebrew](https://brew.sh)):
+**1. Get nxnative and its tools** (once, on a Mac with [Xcode 26 or later](https://apps.apple.com/app/xcode/id497799835) and [Homebrew](https://brew.sh)):
 
 ```
 git clone https://github.com/seedds/nxnative.git && cd nxnative
@@ -64,7 +77,7 @@ python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys
 
 The IPA appears in the same folder (here `~/Games/MarioWonder/SMBWMobile.ipa`). The first build takes 30–60 minutes, later ones about 10. You need free disk space of about twice the NSPs' size plus 10 GB. Options such as `-o` (output path) and `--app-name` are listed by `-h`.
 
-**4. Install** the IPA with your sideloading tool (AltStore, Sideloadly, LiveContainer, …). The app gets the game's name and icon.
+**4. Install** the IPA with your sideloading tool (AltStore, Sideloadly, LiveContainer, …). The app gets the game's name, icon and version (the update's version, for example 1.2.1 for Mario Wonder; the base game's when there is no update).
 
 ## Build Mac and iOS apps together
 
@@ -94,6 +107,10 @@ Mac input: WASD = left stick, arrows = D-pad, J/K/U/I = A/B/X/Y, Q/E = L/R, Z/C 
 
 Physical controllers: pair over Bluetooth or plug in over USB, then focus the game window. macOS must recognize an extended gamepad (for example Xbox, PlayStation or Switch Pro). The first supported controller controls player 1; connecting or reconnecting while the app runs is supported. Nintendo and Xbox face buttons follow their printed letters; PlayStation uses × = A, ○ = B, □ = X, △ = Y. Both sticks, D-pad, shoulders, triggers, stick clicks and menu/options buttons are mapped. Keyboard input works alongside the controller. Switching apps, Spaces, full screen or displays clears held input and rebinds the controller when the game regains focus. Rebuild older apps with `--target macos` to include these fixes. The input path and focus recovery have regression coverage using Apple's software controller snapshots; physical Xbox right-stick input and camera-sensitivity changes have also been verified in Breath of the Wild.
 
+Controller rumble on Mac: turn on vibration in the game's settings. Newly rebuilt Mac apps send feedback automatically to the selected controller when macOS supports vibration on that connection. Switching away, disconnecting the controller or quitting stops feedback. No environment variables are needed.
+
+Phone motion on Mac: an Xbox controller can supply buttons and sticks while an iPhone supplies gyro input for aiming and motion puzzles. Install [MotionSourceiOS](https://github.com/shiftinv/MotionSourceiOS/releases/tag/v1.1.0) on the phone, connect both devices to the same local network, allow Local Network access, select **Portrait**, leave the accelerometer enabled and tap **Start Server**. In the Mac game's menu bar, choose **Motion → Connect Phone…**, enter the phone's displayed IP address and port (default `26760`), then keep the phone still for one second. **Phone motion connected** confirms calibration. Keep MotionSource in the foreground and the phone screen awake. **Motion → Calibrate…** measures drift and resets the heading; **Disconnect Phone** turns motion off. The app remembers the connection and reconnects automatically. See [phone motion](docs/development.md#mac-phone-motion) for orientation and troubleshooting.
+
 Saves are in `~/Library/Application Support/org.nxnative.<title-id>/save`, logs in `~/Library/Logs/org.nxnative.<title-id>/log.txt` (title ID in lowercase). Put `env.txt` next to `save/` for settings. The minimum OS follows the bundled shader libraries: cached libraries from a newer SDK can raise it above macOS 26. Mac compatibility varies by game; Mario's menu and dialogue text currently render blank.
 
 Rebuilt Mac apps apply the validated state and buffer caches automatically; Breath of the Wild also enables uniform-update batching through its profile. These optimizations preserve the game's resolution, effects and timing. Use `DM_LANG=zh-Hans` for Simplified Chinese and `DM_OPMODE=0` for handheld mode if desired; restart after changing settings. See the [environment-variable guide](docs/development.md#mac-environment-variables) for the remaining options.
@@ -102,17 +119,7 @@ Breath of the Wild 1.9.0 Mac builds support `DM_GAME_RES=1920x1080` for true 108
 
 ## Play
 
-**Touch controls.** Tap **2D** / **3D** at the top to switch layouts; the app remembers your choice. 3D World and Breath of the Wild start in 3D, the other games in 2D.
-
-```
- ZL  L3*        [−]  2D/3D  [+]        R3*  ZR
- L                                           R
-                                         X
-  ( L stick )                          Y   A
-             ✚ D-pad*   ( R stick )*     B
-                                  * 3D layout only
-```
-
+**Touch controls.** Tap **2D** / **3D** at the top to switch layouts; the app remembers your choice. 3D World, Breath of the Wild and Odyssey start in 3D, the other games in 2D.
 A connected game controller hides the touch controls and keeps every button.
 
 - **Game language** is English by default. For Chinese, add the line `DM_LANG=zh-Hans` to `Documents/env.txt`.
@@ -125,7 +132,6 @@ A connected game controller hides the touch controls and keeps every button.
 
 - No amiibo and no online features.
 - Fire Emblem Engage: after switching away from the app and back, some sounds may stay silent until you restart it.
-- Super Mario 3D World: a few small magenta squares can appear near the birds in World 1-1.
 
 ## For developers
 
@@ -154,7 +160,7 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license; see [dm/th
 - **[LibHac](https://github.com/Thealexbarney/LibHac)**：在 `dm/tools/nx_extract` 里读取 NSP、把更新叠到本体上。最早的解包用的是 **hactool**。
 - **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)**：SPIR-V 转 Metal 着色语言。
 - **deko3d**（zlib）：`dm/gfx/nvn/nvn_tex.c` 移植了它的贴图布局尺寸算法。
-- **libvpx**（VP9 影片）、**stb_vorbis**（影片声音）、**libdeflate**、**bcdec** 和 **NVIDIA FLIP** 连同许可证放在 `dm/third_party`（[清单](dm/third_party/README.md)）。
+- **libvpx**（VP9 影片）、**stb_vorbis**（影片声音）、**libdeflate**、**Vulkan 头文件** 和 **NVIDIA FLIP** 连同许可证放在 `dm/third_party`（[清单](dm/third_party/README.md)）。
 - 构建时用到 **Capstone**、**lz4**、**fontTools** 和 **XcodeGen**。
 
 ## 游戏
@@ -169,14 +175,29 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license; see [dm/th
 | 十三机兵防卫圈 | 本体 + 1.10 更新 | 约 5 GB | |
 | 超级马力欧 3D 世界 + 狂怒世界 | 本体 + 1.2.2 更新 | 约 3 GB | |
 | 塞尔达传说 旷野之息 | 本体 + 1.9.0 更新（+ DLC） | 约 16 GB | 升级到 60 fps（Switch 上 30 fps） |
+| 塞尔达传说 织梦岛 | 本体 + 1.1.0 更新 | 约 6 GB | |
+| 超级马力欧 奥德赛 | 本体 + 1.4.1 更新 | 约 6 GB | |
 
-新加入、已在 Mac 上运行、还没在 iPhone 上测试：塞尔达传说 织梦岛（本体 + 1.1.0 更新，约 6 GB）。
+正在移植、已能在 Mac 上游玩，iPhone 构建尚未测试：
 
-需要 iOS / iPadOS 26 或更高版本。其他游戏暂不支持：脚本会为它们写一份分析报告，而不是出 IPA。
+- 哈迪斯（本体 + 1.0.38233 更新）：脚本暂时还不能打包。
+- 塞尔达无双 灾厄启示录（本体 + 1.3.0 更新，+ DLC）：可以进入第一场战斗。
+- 火焰纹章 风花雪月（本体 + 1.2.0 更新，+ DLC）：可以完成序章。打包时，脚本会在 Mac 上启动游戏几秒，收集游戏运行时编译的着色器。
+
+| | |
+|:---:|:---:|
+| ![超级马力欧兄弟 惊奇](docs/images/super-mario-bros-wonder.jpg)<br>超级马力欧兄弟 惊奇 | ![火焰纹章 Engage](docs/images/fire-emblem-engage.jpg)<br>火焰纹章 Engage |
+| ![密特罗德 生存恐惧](docs/images/metroid-dread.jpg)<br>密特罗德 生存恐惧 | ![十三机兵防卫圈](docs/images/13-sentinels.jpg)<br>十三机兵防卫圈 |
+| ![超级马力欧 3D 世界 + 狂怒世界](docs/images/super-mario-3d-world.jpg)<br>超级马力欧 3D 世界 + 狂怒世界 | ![塞尔达传说 旷野之息](docs/images/zelda-breath-of-the-wild.jpg)<br>塞尔达传说 旷野之息 |
+| ![塞尔达传说 织梦岛](docs/images/zelda-links-awakening.jpg)<br>塞尔达传说 织梦岛 | ![超级马力欧 奥德赛](docs/images/super-mario-odyssey.jpg)<br>超级马力欧 奥德赛 |
+
+现在构建的最低版本为 iOS / iPadOS 17，旧系统使用实验性的 Metal 3 兼容路径，支持 Metal 4 的 iOS 26+ 设备继续使用 Metal 4。上表的 iPhone 测试结果来自原有 iOS 26 路径，iOS 17 真机测试尚待完成。
+
+需要 iPhone 15 Pro 或更新机型（A17 Pro 或更新芯片），或搭载 M1 或更新芯片的 iPad：游戏贴图采用 BC 压缩，较旧的 iPhone 不支持这种格式。其他游戏暂未支持。脚本会写出分析报告，并根据推测的游戏设置尽力打包 IPA；这样的 IPA 可能无法启动。
 
 ## 打包 IPA
 
-**1. 获取 nxnative 和所需工具**（只需一次，在装有 [Xcode](https://apps.apple.com/app/xcode/id497799835) 和 [Homebrew](https://brew.sh) 的 Mac 上）：
+**1. 获取 nxnative 和所需工具**（只需一次，在装有 [Xcode 26 或更新版本](https://apps.apple.com/app/xcode/id497799835) 和 [Homebrew](https://brew.sh) 的 Mac 上）：
 
 ```
 git clone https://github.com/seedds/nxnative.git && cd nxnative
@@ -201,7 +222,7 @@ python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys
 
 IPA 会出现在同一个文件夹里（这里是 `~/Games/MarioWonder/SMBWMobile.ipa`）。第一次打包要 30–60 分钟，之后约 10 分钟。需要的空闲磁盘空间约为 NSP 大小的两倍再加 10 GB。`-o`（输出路径）、`--app-name` 等选项用 `-h` 查看。
 
-**4. 安装**：用你的侧载工具（AltStore、Sideloadly、LiveContainer 等）安装 IPA。App 会带上游戏的名字和图标。
+**4. 安装**：用你的侧载工具（AltStore、Sideloadly、LiveContainer 等）安装 IPA。App 会带上游戏的名字、图标和版本号（例如马力欧惊奇更新版为 1.2.1；没有更新时使用本体版本）。
 
 ## 一次构建 Mac 和 iOS 安装包
 
@@ -231,6 +252,10 @@ Mac 键位：WASD = 左摇杆，方向键 = 十字键，J/K/U/I = A/B/X/Y，Q/E 
 
 实体手柄：通过蓝牙配对或 USB 连接后，让游戏窗口处于前台。手柄需被 macOS 识别为完整游戏手柄，例如 Xbox、PlayStation 或 Switch Pro。第一个支持的手柄控制 1P，支持运行中连接和重新连接。任天堂和 Xbox 手柄的面键按键帽字母映射；PlayStation 对应 × = A、○ = B、□ = X、△ = Y。双摇杆、十字键、肩键、扳机、摇杆按下和菜单／选项键均已映射，键盘可以同时使用。切换应用、桌面、全屏或显示器时会清空按住的输入，游戏重新获得焦点后会重新绑定手柄。旧版 App 请用 `--target macos` 重新构建以包含这些修复。输入通路与焦点恢复已用苹果的软件手柄快照做回归测试；实体 Xbox 手柄的右摇杆输入及视角灵敏度修改也已在旷野之息中验证。
 
+Mac 手柄震动：在游戏设置中打开震动。重新构建的 Mac App 会自动向当前手柄发送反馈，需要 macOS 支持该手柄在当前连接方式下的震动功能。切出游戏、断开手柄或退出时会停止震动，无需设置环境变量。
+
+Mac 手机体感：可以用 Xbox 手柄负责按键和摇杆，同时用 iPhone 提供瞄准和体感机关需要的陀螺仪输入。在手机安装 [MotionSourceiOS](https://github.com/shiftinv/MotionSourceiOS/releases/tag/v1.1.0)，让两台设备连接同一局域网，允许“本地网络”访问，选择 **Portrait**、保持加速度计开启，然后点 **Start Server**。在 Mac 游戏菜单栏选择 **Motion → Connect Phone…**，填写手机显示的 IP 和端口（默认 `26760`），连接后让手机静止一秒。菜单显示 **Phone motion connected** 即表示校准完成。游玩时保持 MotionSource 在前台、手机屏幕常亮。**Motion → Calibrate…** 用于测量漂移和重置朝向；**Disconnect Phone** 用于关闭体感。App 会记住连接并自动重连。方向设置和排查方法见[手机体感说明](docs/development.md#mac-phone-motion)。
+
 存档位于 `~/Library/Application Support/org.nxnative.<标题号>/save`，日志位于 `~/Library/Logs/org.nxnative.<标题号>/log.txt`（标题号小写）。在 `save/` 旁放置 `env.txt` 可以调整设置。最低系统版本取决于包内着色器库：复用较新 SDK 生成的缓存时，可能高于 macOS 26。各游戏的 Mac 兼容性不同；目前马力欧的菜单和对话文字存在空白问题。
 
 重新构建的 Mac App 会自动启用已验证的状态和缓冲区缓存；旷野之息还会通过游戏档案自动启用 uniform 更新批处理。这些优化保留游戏原有的分辨率、特效和运行时序。需要时可设置 `DM_LANG=zh-Hans` 使用简体中文、`DM_OPMODE=0` 使用掌机模式，修改后重启游戏。其他选项见[环境变量说明](docs/development.md#mac-environment-variables)。
@@ -239,16 +264,8 @@ Mac 键位：WASD = 左摇杆，方向键 = 十字键，J/K/U/I = A/B/X/Y，Q/E 
 
 ## 游玩
 
-**触屏按键。** 点顶部的 **2D** / **3D** 切换布局，App 会记住你的选择。3D 世界和旷野之息默认 3D 布局，其他游戏默认 2D。
+**触屏按键。** 点顶部的 **2D** / **3D** 切换布局，App 会记住你的选择。3D 世界、旷野之息和奥德赛默认 3D 布局，其他游戏默认 2D。
 
-```
- ZL  L3*        [−]  2D/3D  [+]        R3*  ZR
- L                                           R
-                                         X
-  ( 左摇杆 )                           Y   A
-             ✚ 十字键*   ( 右摇杆 )*      B
-                                  * 只在 3D 布局里
-```
 
 连上游戏手柄后，触屏按键会隐藏，手柄上的所有按键都能用。
 
@@ -262,7 +279,6 @@ Mac 键位：WASD = 左摇杆，方向键 = 十字键，J/K/U/I = A/B/X/Y，Q/E 
 
 - 没有 amiibo，也没有联网功能。
 - 火焰纹章 Engage：切到别的 App 再回来后，部分声音可能一直没有，要重开游戏。
-- 超级马力欧 3D 世界：1-1 里可能出现几个小的品红色方块。
 
 ## 开发者
 

@@ -45,9 +45,14 @@ class SharedBuildTests(unittest.TestCase):
             (out / 'icon.jpg').write_bytes(b'synthetic icon')
             return out
 
-        def mock_run(cmd, log, env=None, **kwargs):
-            if Path(cmd[1]).name == 'dmsh_build.py':
+        def mock_run(cmd, log, env=None, cwd=None, on_line=None):
+            Path(log).parent.mkdir(parents=True, exist_ok=True)
+            Path(log).write_text('synthetic command output\n')
+            if Path(cmd[1]).name in ('dmsh_chain.py', 'c1_guard.py'):
+                pass
+            elif Path(cmd[1]).name == 'dmsh_build.py':
                 self.events.append('shaders')
+                self.assertEqual(Path(env['MAIN']), self.work / 'extract' / self.g.get('package') / 'ExeFS/main')
                 if self.fail_target == 'shaders': raise build.nsp.BuildError('synthetic shader failure')
                 for dest in [Path(cmd[3])] + ([Path(env['IOSOUT'])] if env.get('IOSOUT') else []):
                     lib = dest / f'b-{self.chain}' / 'fixture_b.metallib'
@@ -114,6 +119,9 @@ class SharedBuildTests(unittest.TestCase):
         self.mac_check.assert_called_once(); self.mocks['check_prereqs'].assert_not_called()
         self.assertNotIn('IOSOUT', self.shader_calls()[0].kwargs['env'])
         self.assertNotIn('ios', self.events)
+        tools = [Path(c.args[0][1]).name for c in self.mocks['run'].call_args_list]
+        self.assertLess(tools.index('dmsh_chain.py'), tools.index('dmsh_build.py'))
+        self.assertLess(tools.index('dmsh_build.py'), tools.index('c1_guard.py'))
 
     def test_ios_only_needs_no_mac_app_tools(self):
         build.main(self.args('--target', 'ios'))

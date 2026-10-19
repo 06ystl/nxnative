@@ -1,6 +1,6 @@
 //
 // int rt_ex_encode(dst_hdr, dst_ds, src_hdr, src_ds, vp_prev[16], vp_cur[16], unit_bits, ui_bits)
-// nvn_rtex.inc - shaders for runtime extrapolation (#included by nvn_mtl.m after the definitions of rp_end / m4_end / res_add / args_dirty_all / blit etc.)
+// nvn_rtex.inc - shaders for runtime extrapolation (#included by nvn_mtl.m after the definitions of rp_end / backend_end / res_add / args_dirty_all / blit etc.)
 // int rt_ex_encode(dst_hdr, dst_ds, src_hdr, src_ds, vp_prev[16], vp_cur[16], unit_bits, ui_bits)
 //   Encodes one render pass (a single fullscreen triangle) on the current MTL4 command buffer g_cb, extrapolating the opaque HDR and depth of the previous fully drawn frame into dst_hdr / dst_ds by this frame's camera:
 //   Backward mapping: destination pixel q → source pixel p, with 2 fixed-point iterations using the source depth; M = inv(vp_prev) · vp_cur is computed on the CPU in double precision (with translations on the order of 1e4 a single-precision inverse matrix would be off by 0.01 pixel).
@@ -12,7 +12,7 @@
 // Before and after the call: this function first calls rp_end() to close the current render pass and copy encoder; after encoding it sets args_dirty_all() / g_pso_dirty / g_dss_dirty, and the game's next draw reopens its pass with 'load'.
 // Resources: src_hdr / src_ds are created and res_add'ed by the caller; src_ds must be able to open an X32_Stencil8 view (created with MTLTextureUsagePixelFormatView).
 static id<MTLRenderPipelineState> g_rx_pso1; static MTLPixelFormat g_rx_fmt_c, g_rx_fmt_ds;
-static id<MTLDepthStencilState> g_rx_dss; static id<MTL4ArgumentTable> g_rx_args;
+static id<MTLDepthStencilState> g_rx_dss; static id g_rx_args;
 static id<MTLBuffer> g_rx_const[3]; static int g_rx_ci;
 static id<MTLTexture> g_rx_stv; static __unsafe_unretained id<MTLTexture> g_rx_stv_src;
 static const char *k_rx_msl =
@@ -74,8 +74,7 @@ static int rx_setup(MTLPixelFormat fc, MTLPixelFormat fds) {
     if (fds == MTLPixelFormatDepth32Float_Stencil8) { MTLStencilDescriptor *sd = [MTLStencilDescriptor new]; sd.stencilCompareFunction = MTLCompareFunctionEqual; sd.readMask = 0x2; sd.writeMask = 0x80; sd.depthStencilPassOperation = MTLStencilOperationReplace;   // Hole pixels / pixels newly entering from off-screen get 0x80 exported by the fragment, and the later LDR region is recomputed accordingly   // Pixels covered by this frame's UI (the UI stencil pass already wrote 0x2) do not count
         dd.frontFaceStencil = sd; dd.backFaceStencil = sd; }
     g_rx_dss = [g_dev newDepthStencilStateWithDescriptor:dd];
-    if (!g_rx_args) { MTL4ArgumentTableDescriptor *ad = [MTL4ArgumentTableDescriptor new]; ad.maxTextureBindCount = 3; ad.maxBufferBindCount = 1;
-        g_rx_args = [g_dev newArgumentTableWithDescriptor:ad error:&e];
+    if (!g_rx_args) { g_rx_args = backend_arguments(1, 3, 0);
         for (int i = 0; i < 3; i++) { g_rx_const[i] = [g_dev newBufferWithLength:256 options:MTLResourceStorageModeShared]; res_add(g_rx_const[i]); } }
     if (!g_rx_args || !g_rx_dss) { MLOG("【红】运行时外推：参数表 / 深度状态建不出"); g_rx_pso1 = nil; failed = 1; return 0; }
     g_rx_fmt_c = fc; g_rx_fmt_ds = fds; MLOG("运行时外推：着色器建好（颜色格式 %lu，深度格式 %lu）", (unsigned long)fc, (unsigned long)fds);
@@ -130,17 +129,17 @@ int rt_ex_encode(id<MTLTexture> dst_hdr, id<MTLTexture> dst_ds, id<MTLTexture> s
     id<MTLBuffer> cbuf = g_rx_const[g_rx_ci]; g_rx_ci = (g_rx_ci + 1) % 3;
     rp_end(); if (g_blit) { enc_b_end(g_blit); g_blit = nil; }
     // Single pass: extrapolation + hole filling + sharpening compensation by fractional phase → dst_hdr; depth is written into dst_ds; pixels covered by this frame's UI are skipped by stencil (stencil not written)
-    MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
+    MTLRenderPassDescriptor *rp = backend_render_pass();
     rp.colorAttachments[0].texture = dst_hdr; rp.colorAttachments[0].loadAction = MTLLoadActionLoad; rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     rp.depthAttachment.texture = dst_ds; rp.depthAttachment.loadAction = MTLLoadActionLoad; rp.depthAttachment.storeAction = MTLStoreActionStore;
     if (dst_ds.pixelFormat == MTLPixelFormatDepth32Float_Stencil8) { rp.stencilAttachment.texture = dst_ds; rp.stencilAttachment.loadAction = MTLLoadActionLoad; rp.stencilAttachment.storeAction = MTLStoreActionStore; }
-    id<MTL4RenderCommandEncoder> en = [g_cb renderCommandEncoderWithDescriptor:rp]; if (!en) return 0;
-    [en barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:MTL4VisibilityOptionDevice];
-    [en setArgumentTable:g_rx_args atStages:MTLRenderStageFragment];
-    [g_rx_args setTexture:src_hdr.gpuResourceID atIndex:0]; [g_rx_args setTexture:src_ds.gpuResourceID atIndex:1]; [g_rx_args setTexture:g_rx_stv.gpuResourceID atIndex:2];
+    id en = [g_cb renderCommandEncoderWithDescriptor:rp]; if (!en) return 0;
+    backend_barrier(en);
+    backend_set_arguments(en, g_rx_args, MTLRenderStageFragment);
+    backend_texture(g_rx_args, src_hdr, 0); backend_texture(g_rx_args, src_ds, 1); backend_texture(g_rx_args, g_rx_stv, 2);
     [g_rx_args setAddress:cbuf.gpuAddress atIndex:0];
     [en setViewport:(MTLViewport){0, 0, W, H, 0, 1}]; [en setRenderPipelineState:g_rx_pso1]; [en setDepthStencilState:g_rx_dss]; [en setStencilReferenceValue:0];
-    [en drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3]; m4_end(en);
+    enc_r_draw(en, MTLPrimitiveTypeTriangle, 0, 3); backend_end(en);
     args_dirty_all(); g_pso_dirty = g_dss_dirty = 1;
     return 1;
 }

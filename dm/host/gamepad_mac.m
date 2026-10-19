@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include "dm_input.h"
 #include "gamepad_mac.h"
+#include "rumble_mac.h"
 
 static GCController *g_mac_controller;
 static GCExtendedGamepad *g_mac_profile;
@@ -52,6 +53,7 @@ static void pad_select(NSArray<GCController *> *controllers) {
         dm_pad_set(0, 0, 0, 0, 0);
         g_mac_controller = next;
         g_mac_profile = profile;
+        dm_rumble_mac_attach(next);
     }
     if (next) {
         // Rebind even for the same device: foreground changes can replace its
@@ -70,6 +72,7 @@ static void pad_select(NSArray<GCController *> *controllers) {
 
 void dm_gamepad_mac_start(void) {
     static int started; if (started++) return;
+    dm_rumble_mac_start();
     // DM_KEYS owns dm_pad_set during diagnostic replays, including windowed runs.
     const char *script = getenv("DM_KEYS"); g_mac_scripted = script && *script;
     if (g_mac_scripted) return;
@@ -85,6 +88,7 @@ void dm_gamepad_mac_start(void) {
 void dm_gamepad_mac_set_active(int active) {
     if (g_mac_scripted) return;
     g_mac_input_active = !!active;
+    dm_rumble_mac_set_active(active);
     if (g_mac_input_active) pad_select(GCController.controllers);
     else pad_read(nil);
 }

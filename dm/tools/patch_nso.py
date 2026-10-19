@@ -146,17 +146,43 @@ CUTS = {
   # The game logic time step follows it: ksys::VFR is initialized with a base interval of 2 (constant 2 at main+0x127e740 → VFR::init main+0x151d2d0), and every frame VFR::updateInterval (main+0x151d3d0,
   # called at main+0xcf9ad4 / main+0x1281044) takes the framework's current interval (vtable +0x138); the frame ratio = current interval / 2 -- at interval 1 each frame advances half a 30 fps tick and the game speed stays the same;
   # when it struggles and steps back to 2 / 3 the ratio is 1 / 1.5, again at the same speed. So only the floor changes from 2 to 1: the lower bound of the candidate interval (two places), the step-down target recorded when stepping up, max(candidate, 3) - 1 → max(candidate, 2) - 1,
-  # and stepping down stops at < 3 → < 2. On hardware the same logic starting from 1 would also be 60 fps (falling back to 30 by itself when the GPU cannot keep up)
+  # and stepping down stops at < 3 → < 2. On hardware the same logic starting from 1 would also be 60 fps; it falls back to 30 by itself only when its input shows a slow frame (the last two cuts make that input include the GPU time)
   'cd57b23fa4bbad65803d9788c01821ee': [
     (0x112670c, '6041201e', '4041201e', '动态间隔候选下限：fmov s0,s11（2.0）→ fmov s0,s10（1.0）', '仅宿主'),
     (0x1126710, '7f0b0071', '7f070071', '动态间隔候选下限：cmp w27,#2 → cmp w27,#1', '仅宿主'),
     (0x112665c, '78008052', '58008052', '升档时记的降档目标 max(候选, w24) − 1：mov w24,#3 → mov w24,#2', '仅宿主'),
     (0x1126748, '1f0d0071', '1f090071', '升档时记的降档目标：cmp w8,#3 → cmp w8,#2', '仅宿主'),
     (0x1126794, '3f0d0071', '3f090071', '降档到 < 3 停 → 到 < 2 停：cmp w9,#3 → cmp w9,#2', '仅宿主'),
+    # The controller's input (framework +0x250, controller main+0x1126cec..) is the main thread's CPU span up to the draw step (about 2.7 ms in the first shrine), so GPU-bound frames stayed at interval 1 and the game ran slow
+    # (iPhone 16 Pro Max: 25 ms frames, two thirds of the speed). The game has a GPU-time path that uses max(CPU span, GPU time between the frame's two timestamp reports, framework +0x220, read after the fence wait)
+    # but takes it only while [main+0x1e3a638]+0x1d2b8 is set (64 of 6,046 shrine frames); both of its checks become branches into it. The GPU time needs the profile's gpu_timestamps segment
+    (0x112691c, 'c00000b4', '03000014', '间隔控制器恒走 GPU 时间路径（CPU 段计时）：cbz x0,#0x1126934 → b #0x1126928', '仅宿主'),
+    (0x1126974, 'c00000b4', '03000014', '间隔控制器恒走 GPU 时间路径（取 max(CPU 段, GPU 时间)）：cbz x0,#0x112698c → b #0x1126980', '仅宿主'),
   ],
   '56ec24747ec9e7f19b3efb062483a19d': [
     (0x346430, '08fca752', '087ca052', 'AddressRegionManager 构造：节点区上限 mov w8,#0x3fe00000 → mov w8,#0x3e00000', '仅宿主'),
     (0x3464cc, '09fca752', '097ca052', 'AddressRegionManager 构造：节点区登记为已占区域的长度 mov w9,#0x3fe00000 → mov w9,#0x3e00000', '仅宿主'),
+  ],
+  # The Legend of Zelda: Link's Awakening 1.1.0 (v131072) main: the physics step (main+0x15730, main thread) rebuilds each world's PhysX completion task in place
+  # (a PxLightCpuTask at world+0xc8) and passes it to simulate. A worker runs it (main+0x10ccf80: fetchResults, world+0x1d8 done = 1, notify, unlock) and then calls its
+  # release (main+0x10cd070), which calls the task's own destructor: vtable back to the PxLightCpuTask base, mTm = 0 (main+0x10cced0). At 30 fps the game steps twice
+  # per frame (step, wait, step, wait); the unlock hands the world's mutex to the woken main thread, and when the worker is descheduled there the main thread's
+  # next step rebuilds the task before the late destructor runs, which then wipes the new task. The next simulation's NpSceneCompletion::release reads its mTm = 0:
+  # crash at main+0x10ccf28 (lr main+0x13c236c; seen on the iPhone and in 2 of 5 Mac runs, in every Mac run under CPU load). On the Switch the release follows the
+  # unlock within nanoseconds. The release becomes a plain ret: the destructor only resets the vtable and mTm (no resources), the step rebuilds every field, and this
+  # release is used by this one vtable (main+0x1c51308 slot 7) only
+  '909e904af78ac1b8deefe97ab2ccdb51': [
+    (0x10cd070, '080040f9', 'c0035fd6', '物理完成任务 release（自调析构）：ldr x8,[x0] → ret（不再析构；步进函数每步原地重建）', '仅宿主'),
+  ],
+  # Hyrule Warriors: Age of Calamity 1.3.0 (v327680) main: the init (main+0x8d9610) hands the KTSL sound engine three heaps carved from one block: 15 MB engine memory, 2 MB, and
+  # 142 MB sound data (sizes built by mov x8,#0xf00000; movk x8,#0x20,lsl #48 and mov w9,#0x8e00000; constructor main+0x12647a0, heaps created at main+0x1a2ba58). The audio renderer
+  # work buffer in the 15 MB heap is 0x760000 (the SDK's AudioRenderSystem::GetWorkBufferSize, 0x40a9c8 of it command buffer), and the engine's setup asks for about 16.9 MB in
+  # all: the fourth 0x1b5860-byte player block (main+0x1a32f70; three of the four players mix 5.1) came back null, the setup released its memory pools and gave up (-51),
+  # the first sound archive (ASRS) never loaded and nnMain's resource wait (main+0x8d9bc8) spun forever. Where hardware differs is not known. The engine heap gets 4 MB from the
+  # sound data heap, so the block the three come from keeps its size
+  'c3cf52bf2b05d7310884971b50bcccb8': [
+    (0x8d9610, '081ea0d2', '0826a0d2', '声音引擎堆：mov x8,#0xf00000 → mov x8,#0x1300000（+4 MB）'),
+    (0x8d9618, '091ca152', '0914a152', '声音数据堆：mov w9,#0x8e00000 → mov w9,#0x8a00000（-4 MB，三个堆所在块的总尺寸不变）'),
   ],
 }
 # ---- Registered observation gates: {NSO build ID: [(offset, number, original instruction word, reason)]}. Numbers match OBS_* in the host's hle.h;
@@ -495,6 +521,9 @@ def find_windows(insl):
         j = i
         while j < len(insl) and insl[j].mnemonic not in EXCL_ST: j += 1
         if j >= len(insl) or j - i >= 16: continue
+        # Another exclusive load before the store: this one has no store of its own (a retry block, see retry_block); spanning both would merge two sequences
+        # (Tears of the Kingdom main+0x5a4674: ldxr w18; cmp; b.eq <stxr of 0x5a427c>; ...; 0x5a469c: ldxr w13; and; stxr; cbnz, a loop other code branches to)
+        if any(x.mnemonic in EXCL_LD for x in insl[i + 1:j]): continue
         if j + 1 < len(insl) and insl[j + 1].mnemonic in ('cbz', 'cbnz'): j += 1
         seg = insl[i:j + 1]
         if any(has18(x) for x in seg): out.append(seg)
@@ -532,6 +561,57 @@ def site_window(seg):
     for t in [hi] + ex_targets:   # fall-through first
         emit(STRX(S, T)); emit(LDP(S, T, 31, -16)); emit(B(here(), t)); emit(NOP)
     return start, lo, hi
+
+def retry_block(insl, k, wseg):
+    """The branch insl[k] lands in the middle of window wseg. Accepted only when it ends an out-of-line retry block that re-enters the window at its store-exclusive:
+    an exclusive load, then instructions that do not branch, then this branch. Tears of the Kingdom main+0x18598: ldxr w17,[x10]; cmp w15,w17; b.eq 0x181fc,
+    where 0x181fc is the stxr w17,w18,[x10] of the window 0x181ec..0x18200, whose failed stxr branches back to 0x18598 (same shape at 0x185e8 → 0x18244).
+    Returns (the retry block, the window from that store on), or None"""
+    t = insl[k].operands[-1].imm
+    tail = [y for y in wseg if y.address >= t]
+    if not tail or tail[0].mnemonic not in EXCL_ST: return None
+    for p in range(k - 1, max(-1, k - 8), -1):
+        q = insl[p]
+        if q.mnemonic in EXCL_LD: return insl[p:k + 1], tail
+        if q.mnemonic in ('b', 'bl', 'br', 'blr', 'ret', 'cbz', 'cbnz', 'tbz', 'tbnz') or q.mnemonic.startswith('b.') or q.mnemonic in EXCL_ST: return None
+    return None
+
+def site_retry_window(parts):
+    """A retry block (see retry_block) gets a patch copy of its own: it cannot jump into the window's copy, because the x18 stand-in would have to be loaded
+    between its exclusive load and the store. parts = [(retry block, its fall-through), (window from the store on, the window's fall-through)] are copied one
+    after the other under one prologue, each followed by its fall-through stub; branches to any copied instruction (between the parts, and the failed store's
+    branch back to the retry block's head) stay inside the copy, every other target leaves through an exit stub as in site_window"""
+    used = set()
+    for seg, _ in parts:
+        for x in seg: used |= regs_in(x)
+    S, T = pick(used)
+    start = here()
+    emit(STP(S, T, 31, -16)); emit(MRS_TPIDRRO(T)); emit_slot_addr(T, S, 'K18'); emit(LDRX(S, T))
+    pos, at = {}, here()
+    for seg, _ in parts:
+        for x in seg: pos[x.address] = at; at += 4
+        at += 16
+    exits, ex_targets = at, []
+    for seg, ft in parts:
+        for x in seg:
+            w = struct.unpack('<I', x.bytes)[0]
+            if has18(x): w = subst(x, S)
+            m, pc = x.mnemonic, here()
+            if m in ('cbz', 'cbnz', 'tbz', 'tbnz') or m.startswith('b.'):
+                tgt = x.operands[-1].imm
+                if tgt not in pos and tgt not in ex_targets: ex_targets.append(tgt)
+                newt = pos[tgt] if tgt in pos else exits + 16 * ex_targets.index(tgt)
+                off = (newt - pc) >> 2
+                if m in ('tbz', 'tbnz'): w = (w & 0xFFF8001F) | ((off & 0x3FFF) << 5)
+                else: w = (w & 0xFF00001F) | ((off & 0x7FFFF) << 5)
+                dd = dis(w, pc); assert dd.operands[-1].imm == newt and dd.mnemonic == m
+            else:
+                assert m not in ('adr', 'adrp', 'b', 'bl', 'br', 'blr', 'ret') and not (m == 'ldr' and '[' not in x.op_str), hex(x.address)
+            emit(w)
+        emit(STRX(S, T)); emit(LDP(S, T, 31, -16)); emit(B(here(), ft)); emit(NOP)
+    for t in ex_targets:
+        emit(STRX(S, T)); emit(LDP(S, T, 31, -16)); emit(B(here(), t)); emit(NOP)
+    return start
 
 # ---- Function boundaries (eh_frame_hdr) ----
 m0 = struct.unpack_from('<I', IMG, 4)[0]
@@ -575,20 +655,22 @@ import bisect
 def func_of(a):
     i = bisect.bisect_right(starts, a) - 1
     return (starts[i], starts[i + 1] if i + 1 < len(starts) else TEXT_END) if i >= 0 else (a, a + 4)
-done = set(); windows = []; jumps = {}; tabjumps = {}
+done = set(); windows = []; jumps = {}; tabjumps = {}; retries = []
 def jump_offsets(insl, j):
     """The br x18 is preceded by the offset-table form (Engage main+0x12eec94): cmp w18,#N; b.hi; ldrsw x18,[xB,x18,lsl #2]; add x18,x18,xB.
     The index may be another register, and the bounds check may be on a register copied into it: Link's Awakening's GLSLC (subsdk0+0x1be6e8) has
     sub w0,w18,#0xd1; cmp w0,#0x31; b.hi; ldrsw x18,[x17,x0,lsl #2], its movie module (subsdk1+0xae9a4) cmp w21,#7; b.hi; ...; mov w18,w21; ldrsw x18,[x4,x18,lsl #2].
+    The entry may also be loaded into another register and only the add writes x18: Cuphead (Unity 2017.4, main+0x1bb872c) has cmp w17,#7; ldrsw x17,[x15,x17,lsl #2]; add x18,x17,x15
+    (found by armyja, GitHub pull request #1).
     For the table base xB, search back for the nearest writer: it must be add xB,xB,#lo, and the writer before it must be adrp xB. Returns all targets, or None if not recognized"""
     ctx = insl[max(0, j - 16):j]
-    add = next((p for p in reversed(ctx) if p.mnemonic == 'add' and re.fullmatch(r'x18, x18, x\d+', p.op_str)), None)
+    add = next((p for p in reversed(ctx) if p.mnemonic == 'add' and re.fullmatch(r'x18, x\d+, x\d+', p.op_str)), None)
     if not add: return None
-    rb = add.op_str.split(', ')[2]
-    ld = next((p for p in reversed(ctx) if p.mnemonic == 'ldrsw' and re.fullmatch(rf'x18, \[{rb}, x(\d+), lsl #2\]', p.op_str)), None)
+    _, t, rb = add.op_str.split(', ')   # t = the loaded entry, rb = the table base
+    ld = next((p for p in reversed(ctx) if p.mnemonic == 'ldrsw' and re.fullmatch(rf'{t}, \[{rb}, x(\d+), lsl #2\]', p.op_str)), None)
     if not ld: return None
     # GLSLC subsdk0+0x2f403c checks a masked copy instead: and w16,w18,#0x3f; cmp w16,#0xe; b.hi; ...; and x18,x18,#0x3f; ldrsw x18,[x15,x18,lsl #2]
-    idx = {'w' + re.fullmatch(rf'x18, \[{rb}, x(\d+), lsl #2\]', ld.op_str).group(1)}
+    idx = {'w' + re.fullmatch(rf'{t}, \[{rb}, x(\d+), lsl #2\]', ld.op_str).group(1)}
     masked = None   # (source, mask, position) when the index is "source & mask"
     k0 = ctx.index(ld); cmp = None
     def wname(r): return 'w' + r[1:]
@@ -623,6 +705,52 @@ def jump_offsets(insl, j):
     if page is None: return None
     tb = page + lo
     return [tb + struct.unpack_from('<i', IMG, tb + 4 * i)[0] for i in range(n)]
+def table_base(insl, k, rb):
+    """Address the table-base register rb holds at insl[k]: its writer chain before k must be add rb,rb,#lo after adrp rb (as in jump_offsets); None otherwise"""
+    lo = None
+    for p in reversed(insl[max(0, k - 256):k]):
+        _, w = p.regs_access()
+        if not any(p.reg_name(r) == rb for r in w): continue
+        if lo is None and p.mnemonic == 'add' and re.fullmatch(rf'{rb}, {rb}, #(0x[0-9a-f]+|\d+)', p.op_str): lo = int(p.op_str.split('#')[1], 0); continue
+        if lo is not None and p.mnemonic == 'adrp' and p.op_str.startswith(rb + ','): return p.operands[1].imm + lo
+        return None
+    return None
+def jump_adr_offsets(insl, j):
+    """Entries relative to an adr rather than to the table (Tears of the Kingdom main+0x393bb0): cmp w0,#5; b.hi; ...; adr x18,#L; ldrsw x1,[x17,x0,lsl #2];
+    add x18,x18,x1; br x18 → target = L + entry, with the table base x17 from adrp + add. Tried only where jump_offsets finds nothing. Returns all targets, or None if not recognized"""
+    ctx = insl[max(0, j - 16):j]
+    add = next((p for p in reversed(ctx) if p.mnemonic == 'add' and re.fullmatch(r'x18, x\d+, x\d+', p.op_str)), None)
+    if not add: return None
+    ka = ctx.index(add); ops = add.op_str.split(', ')[1:]
+    for e, a in (ops, ops[::-1]):   # e = the loaded entry, a = the adr base
+        ld = next((p for p in reversed(ctx[:ka]) if p.mnemonic == 'ldrsw' and re.fullmatch(rf'{e}, \[x\d+, x\d+, lsl #2\]', p.op_str)), None)
+        wa = next((p for p in reversed(ctx[:ka]) if any(p.reg_name(r) == a for r in p.regs_access()[1])), None)   # the nearest writer of a
+        if not ld or not wa or wa.mnemonic != 'adr': continue
+        tb_reg, ix = re.fullmatch(rf'{e}, \[(x\d+), x(\d+), lsl #2\]', ld.op_str).groups()
+        idx, cmp = {'w' + ix}, None   # the index and the registers copied into it (main+0x596d30: cmp w15,#8; b.hi; mov w16,w15; ...; ldrsw x0,[x17,x16,lsl #2])
+        for p in reversed(ctx[:ctx.index(ld)]):   # walk back from the load to the bounds check
+            m = re.fullmatch(r'(w\d+), (w\d+)', p.op_str) if p.mnemonic == 'mov' else None
+            if m and m.group(1) in idx: idx.add(m.group(2)); continue
+            m = re.fullmatch(r'(w\d+), #(0x[0-9a-f]+|\d+)', p.op_str) if p.mnemonic == 'cmp' else None
+            if m and m.group(1) in idx: cmp = p; break
+            if any('w' + p.reg_name(r)[1:] in idx for r in p.regs_access()[1]): return None   # the index changes after the check
+        if cmp is None: return None
+        n, at = int(cmp.op_str.split('#')[1], 0) + 1, wa.operands[1].imm
+        def targets(tb): return [at + struct.unpack_from('<i', IMG, tb + 4 * i)[0] for i in range(n)] if 0 <= tb and tb + 4 * n <= len(IMG) else None
+        tb = table_base(insl, insl.index(ld), tb_reg)
+        if tb is not None: return targets(tb)
+        # The base register was loaded further away (main+0x5f2a9c: hoisted out of the dispatch block): take every adrp + add pair in the function that builds it,
+        # and accept the table only if exactly one candidate makes every target an instruction of this function
+        fa, fb = insl[0].address, insl[-1].address + 4
+        cands = set()
+        for k, p in enumerate(insl):
+            if p.mnemonic != 'adrp' or not p.op_str.startswith(tb_reg + ','): continue
+            q = next((x for x in insl[k + 1:k + 9] if any(x.reg_name(r) == tb_reg for r in x.regs_access()[1])), None)
+            m = re.fullmatch(rf'{tb_reg}, {tb_reg}, #(0x[0-9a-f]+|\d+)', q.op_str) if q is not None and q.mnemonic == 'add' else None
+            if m: cands.add(p.operands[1].imm + int(m.group(1), 0))
+        ok = [tb for tb in sorted(cands) if (t := targets(tb)) and all(fa <= x < fb and x % 4 == 0 for x in t)]
+        return targets(ok[0]) if len(ok) == 1 else None
+    return None
 funcs = sorted({func_of(a) for a, (k, _) in kinds.items() if k == 'x18'})
 for fa, fb in funcs:
     insl = list(md.disasm(bytes(IMG[fa:fb]), fa))
@@ -632,34 +760,48 @@ for fa, fb in funcs:
     for j, ins in enumerate(insl):
         if ins.mnemonic == 'br' and ins.op_str == 'x18':
             base = width = None
-            ctx = insl[max(0, j - 8):j]
+            # 16 instructions back, as for the offset-table form: Hades main+0x1135d0 has six vector moves between the add and the br, which put its adr x18 nine back
+            ctx = insl[max(0, j - 16):j]
             for p in reversed(ctx):
                 if p.mnemonic == 'adr' and p.op_str.startswith('x18,'): base = p.operands[1].imm; break
             for p in reversed(ctx):
                 if p.mnemonic == 'add' and p.op_str.startswith('x18, x18,') and 'lsl #2' in p.op_str:
-                    idx = num(p.reg_name(p.operands[2].reg))
+                    # capstone names x30 'lr' (and x29 'fp'): Age of Calamity main+0x1382160 indexes with add x18,x18,x30,lsl #2 after ldrb w30,[x14,x12]
+                    rn = p.reg_name(p.operands[2].reg); idx = {'lr': 30, 'fp': 29}.get(rn, num(rn))
                     for q in reversed(ctx):
                         if q.mnemonic in ('ldrb', 'ldrsb') and num(q.reg_name(q.operands[0].reg)) == idx: width = 256
                         if q.mnemonic in ('ldrh', 'ldrsh') and num(q.reg_name(q.operands[0].reg)) == idx: width = 65536
                         if width: break
                     break
             if not (base and width):
-                tgt = jump_offsets(insl, j)
+                tgt = jump_offsets(insl, j) or jump_adr_offsets(insl, j)
                 assert tgt, f'jump table {ins.address:x}'
                 tabjumps[ins.address] = tgt; continue
             jumps[ins.address] = (base, width)
-    # No jump may land in the middle of a window
+    # No jump may land in the middle of a window, except a retry block's branch onto the window's store-exclusive (retry_block), which gets a copy of its own
     inwin = {x.address for wseg in ws for x in wseg}; heads = {wseg[0].address for wseg in ws}
-    for x in insl:
+    rmid = set()
+    for k, x in enumerate(insl):
         if x.mnemonic in ('b', 'bl', 'cbz', 'cbnz', 'tbz', 'tbnz') or x.mnemonic.startswith('b.'):
             t = x.operands[-1].imm
-            assert not (t in inwin and t not in heads), f'branch into window {x.address:x}'
+            if t in inwin and t not in heads:
+                wseg = next(w for w in ws if any(y.address == t for y in w))
+                rb = retry_block(insl, k, wseg) if x.mnemonic not in ('b', 'bl') else None
+                assert rb, f'branch into window {x.address:x}'
+                assert not any(y.address in done for y in rb[0]), f'retry block overlaps a window {rb[0][0].address:x}'
+                retries.append([(rb[0], x.address + 4), (rb[1], wseg[-1].address + 4)])
+                done |= {y.address for y in rb[0]}; rmid |= {y.address for y in rb[0][1:]}
+    for x in insl:
+        if x.mnemonic in ('b', 'bl', 'cbz', 'cbnz', 'tbz', 'tbnz') or x.mnemonic.startswith('b.'):
+            assert x.operands[-1].imm not in rmid, f'branch into retry block {x.address:x}'
     for a_, tgt in tabjumps.items():
         if fa <= a_ < fb: assert not any(t in inwin and t not in heads for t in tgt), f'jump table target into window {a_:x}'
 
 def put_branch(at, to): struct.pack_into('<I', IMG, at, B(at, to))
 for wseg in windows:
     st, lo, hi = site_window(wseg); stat('window'); put_branch(lo, st)
+for parts in retries:
+    st = site_retry_window(parts); stat('retry_window'); put_branch(parts[0][0][0].address, st)
 for a in sorted(kinds):
     if a in done: continue
     k, arg = kinds[a]

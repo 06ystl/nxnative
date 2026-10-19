@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-# Unsigned IPA straight from the NSPs: identify the game (title ID → game profile dm/games/<id>/) → extract (nx_extract) → rewrite the code modules (patch_nso.py) → split out the shaders and check them against the profile's tables (shader_split.py)
-#   → iOS shader libraries (dmsh_build.py) → build_ipa.sh. A game with no matching profile is only surveyed (<NSP folder>/<title ID>_survey/survey.md); no IPA.
+# Unsigned IPA straight from the NSPs: identify the game (title ID → game profile dm/games/<id>/) → extract (nx_extract) → rewrite the code modules (patch_nso.py)
+#   → (profiles with shader_glslc_capture: capture the shaders the game compiles at run time, by booting it in the Mac host for a few seconds) → split out the shaders and check them against the profile's tables (shader_split.py)
+#   → iOS shader libraries (dmsh_build.py) → build_ipa.sh. A game with no matching profile is surveyed (<NSP folder>/<title ID>_survey/survey.md), then gets a provisional profile guessed from
+#   the survey (<NSP folder>/<title ID>_build/profile/<title ID>/, outside the repository, found through DM_GAMES_DIR) and a best-effort IPA that may not boot; SURVEY_ONLY / --survey-only stops after the survey.
 # Two ways to run it: open this file in Spyder and press F5 (it uses the values under "Settings" below; an empty NSP folder or prod.keys is asked for at run time);
 #   or in a terminal: python3 scripts/build_ipa_from_nsp.py <NSP folder> -k <prod.keys> [options] (values given on the command line override "Settings", -h lists every option;
 #   without keyboard input a missing value is not asked for but reported as an error; exit code 0 on success, 1 on error, 130 when interrupted). Command-line options entered in Spyder's run configuration work the same way.
 # Uses only three things: this repository, a folder holding one game's NSPs (the base game plus the updates listed in the profile's shader_versions are required; DLC NSPs, when present, are packed too and unlock the add-on content already in the game), and prod.keys.
-# Every intermediate file is under <id>_build/ in the NSP folder: extract/ (the extracted game files, deleted after the IPA is built by default), aoc/ (each DLC's RomFS by index), tools/, patched_*/, shader/ (shader package and caches, kept so the next build is fast), logs/ (each step's full output), tmp/, ipa/. The finished IPA also goes to the NSP folder by default.
+# Every intermediate file is under <id>_build/ in the NSP folder: extract/ (the extracted game files, deleted after the IPA is built by default), aoc/ (each DLC's RomFS by index), tools/ (nx_extract, and the Mac host for a run-time shader capture), patched_*/, shader/ (shader package and caches, kept so the next build is fast), logs/ (each step's full output), tmp/, ipa/. The finished IPA also goes to the NSP folder by default.
 # The shader translator is the in-repo dm/gfx/tools/dmsh_xlate_bin (the build whose fingerprints match dmsh_chain.lock; a rebuilt dll has different fingerprints and dmsh_build refuses it).
 # The Python running this file needs lz4, capstone and fonttools; also needed: Xcode, xcodegen, .NET SDK 10, zstd, spirv-cross. For Mario the first run takes about 35 minutes (mostly the shader libraries); later runs take about 10 (the shader libraries come from the cache). Key values are never printed.
-import collections, ctypes, getpass, os, re, shutil, struct, subprocess, sys, tempfile, threading, time, zlib
+# The console shows one line per stage ([k/n] stage, with a bar, done/total, percent, elapsed time and ETA where the work can be counted); the tools' own output goes only to logs/ (PROGRESS / --progress).
+import collections, ctypes, getpass, os, re, shlex, shutil, struct, subprocess, sys, tempfile, threading, time, types, zlib
 from pathlib import Path
 
 # ---- Settings ----
@@ -20,8 +23,11 @@ APP_NAME = ''                           # app name on the home screen (empty = t
 BUNDLE_ID = ''                          # the app's bundle ID (empty = org.nxnative.<base game title ID in lowercase>)
 KEEP_EXTRACTED = False                  # keep the extracted game files after the IPA is built (saves extraction next time; as big as the game files)
 DM_ENV_FILE = ''                        # optional: environment switches for a diagnostic build (one KEY=VALUE per line)
+SURVEY_ONLY = False                     # a game with no profile in dm/games: only write the survey, no provisional profile and no IPA
+PROFILE_OUT = ''                        # where a provisional profile goes (empty = <NSP folder>/<title ID>_build/profile; the profile is <this>/<title ID>/)
 
-BEAT = 60                               # progress interval of quiet steps (seconds)
+PROGRESS = 'auto'                       # stage lines on the console: 'bar' (one line per stage, redrawn in place), 'lines' (a plain line every BEAT seconds), 'off' (only each stage's start and end); 'auto' = bar in a terminal or Spyder, lines when the output goes to a file
+BEAT = 30                               # seconds between progress lines in 'lines' mode
 TOOL_PATHS = ['/opt/homebrew/bin', '/usr/local/bin', '/usr/local/share/dotnet', os.path.expanduser('~/.dotnet')]   # GUI apps such as Spyder do not get the shell's PATH
 
 
@@ -29,8 +35,182 @@ class BuildError(Exception):
     pass
 
 
+def clock():
+    return time.strftime('%H:%M:%S')
+
+
 def say(msg):
-    print(f'[{time.strftime("%H:%M:%S")}] {msg}', flush=True)
+    PROG.say(f'[{clock()}] {msg}')
+
+
+def hms(s):   # seconds → m:ss, or h:mm:ss from an hour on
+    s = int(s); h, m = divmod(s // 60, 60)
+    return f'{h}:{m:02d}:{s % 60:02d}' if h else f'{m}:{s % 60:02d}'
+
+
+def size_unit(v):   # (unit, divisor) for a byte count
+    return next(((u, d) for u, d in (('GB', 2**30), ('MB', 2**20)) if v >= d), ('KB', 2**10))
+
+
+def amount(v, unit=''):   # a count, or a byte size when unit is 'B'
+    if unit == 'B':
+        u, d = size_unit(v); return f'{v / d:.1f} {u}'
+    return f'{v:,}' + (f' {unit}' if unit else '')
+
+
+# ---- Progress on the console ----
+class Progress:
+    """The console view of the build: one line per stage, "[k/n] stage · step", with a bar, done/total, percent, elapsed time and ETA when the work can be counted, else a spinner and the elapsed time.
+    Modes: bar = the line is redrawn in place (a terminal, Spyder's console) and replaced by a ✓ line when the stage ends; lines = a plain line when a stage or step starts, every BEAT seconds and at the end
+    (for output piped to a file); off = only each stage's start and end lines. Counters come from set(), or from a poll function that runs in a thread of its own (it may walk a big folder) and returns set()'s arguments.
+    Messages go through say(), which prints them above the live line"""
+    SPIN, BLOCKS, POLL = '⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏', ' ▏▎▍▌▋▊▉', 1.0
+
+    def __init__(self, mode='off'):
+        self.mode, self.lock, self.k, self.n, self.cur, self.shown, self.ticker = mode, threading.RLock(), 0, 0, None, 0, None
+
+    def plan(self, n):   # the next n stages are numbered 1..n
+        with self.lock: self.k, self.n = 0, n
+
+    def stage(self, name, poll=None, step='', **kw):
+        """Start the next stage, ending the current one. kw: set()'s arguments"""
+        with self.lock:
+            self.end()
+            self.k += 1; now = time.time()
+            self.cur = types.SimpleNamespace(name=name, step=step, unit='', total=None, done=None, est=False, note='', t0=now, hist=collections.deque(), beat=now, pstop=None)
+            if self.mode != 'bar': self._out(f'[{clock()}] [{self.k}/{self.n}] {name}' + (f' · {step}' if step else '') + ' …')
+            self.set(**kw)
+        if poll: self.watch(poll)
+        if self.mode != 'off' and not self.ticker:
+            self.ticker = threading.Thread(target=self._tick, daemon=True); self.ticker.start()
+
+    def watch(self, poll):
+        """Call poll() over and over until the stage ends or watch() is called again (None: stop); poll returns set()'s arguments, or None to leave the line as it is"""
+        with self.lock:
+            st = self.cur
+            if not st: return
+            if st.pstop: st.pstop.set()
+            st.pstop = stop = threading.Event()
+        if poll: threading.Thread(target=self._poll, args=(st, poll, stop), daemon=True).start()
+
+    def set(self, done=None, total=None, step=None, unit=None, est=None, note=None):
+        """done / total: the count of the current step (unit 'B' = bytes); est: total is an estimate (shown with ~); note: shown after the count;
+        step: the step within the stage (a new step starts with no count and restarts the ETA)"""
+        with self.lock:
+            st = self.cur
+            if not st: return
+            if step is not None and step != st.step:
+                st.step, st.done, st.total, st.unit, st.est, st.note, st.beat = step, None, None, '', False, '', time.time(); st.hist.clear()
+                if self.mode == 'lines': self._out(f'[{clock()}] [{self.k}/{self.n}] {st.name} · {step} …')
+            if unit is not None: st.unit = unit
+            if total is not None: st.total = total
+            if est is not None: st.est = est
+            if note is not None: st.note = note
+            if done is not None:
+                st.done = done; now = time.time(); st.hist.append((now, done))
+                while len(st.hist) > 2 and st.hist[1][0] < now - 60: st.hist.popleft()   # the ETA follows the rate of the last minute
+
+    def end(self, summary='', ok=True):
+        """End the current stage with a ✓ (or ✗) line: its elapsed time and a summary"""
+        with self.lock:
+            st, self.cur = self.cur, None
+            if not st: return
+            if st.pstop: st.pstop.set()
+            self._out(f'[{clock()}] {"✓" if ok else "✗"} [{self.k}/{self.n}] {st.name} ({hms(time.time() - st.t0)})' + (f': {summary}' if summary else ''))
+
+    def say(self, msg):
+        with self.lock: self._out(msg)
+
+    def close(self, ok=True):   # end the current stage and stop drawing
+        with self.lock: self.end(ok=ok); self.mode = 'off'
+
+    def _count(self, st):   # "1.9/~5.0 GB", "1,203/19,592 shaders", "2,301 files" (no total); '' without a count
+        if st.done is None: return ''
+        if not st.total: return amount(st.done, st.unit)
+        t = '~' if st.est else ''
+        if st.unit == 'B':
+            u, d = size_unit(st.total); return f'{st.done / d:.1f}/{t}{st.total / d:.1f} {u}'
+        return f'{st.done:,}/{t}{st.total:,}' + (f' {st.unit}' if st.unit else '')
+
+    def _eta(self, st):   # seconds left at the rate of the last minute; None while unknown
+        if not st.total or len(st.hist) < 2: return None
+        (t1, d1), (t2, d2) = st.hist[0], st.hist[-1]
+        if t2 - t1 < 3 or d2 <= d1: return None
+        return max(st.total - st.done, 0) * (t2 - t1) / (d2 - d1)
+
+    def _fields(self, st):   # (head, fraction done or None, count, note, times)
+        head = f'[{self.k}/{self.n}] {st.name}' + (f' · {st.step}' if st.step else '')
+        frac = min(st.done / st.total, 0.99) if st.total and st.done is not None else None   # 100 % only when the stage ends
+        eta = self._eta(st)
+        return head, frac, self._count(st), st.note, hms(time.time() - st.t0) + (f' · ETA {hms(eta)}' if eta is not None else '')
+
+    def _line(self, st, width):
+        head, frac, count, note, times = self._fields(st)
+        head = f'{self.SPIN[int(time.time() * 8) % len(self.SPIN)]} {head}'
+        pct = f'{frac * 100:.0f}%' if frac is not None else ''
+        for note in (note, ''):   # a narrow console loses the note first, then the bar
+            rest = '  '.join(x for x in (' · '.join(x for x in (count, note) if x), times) if x)
+            barw = min(20, width - len(f'{head}  {pct:>4}  {rest}') - 3)   # the bar takes what the console's width leaves, up to 20 cells; none below 8
+            if frac is None or barw >= 8: break
+        if frac is not None and barw >= 8:
+            cells = frac * barw; full = int(cells); part = int((cells - full) * 8)
+            pct = ('█' * full + (self.BLOCKS[part] if part else '')).ljust(barw, '░') + f' {pct:>4}'
+        return '  '.join(x for x in (head, pct, rest) if x)[:width - 1]
+
+    def _out(self, text):   # a whole line above the live one (the caller holds the lock)
+        if self.shown: sys.stdout.write('\r' + ' ' * self.shown + '\r'); self.shown = 0
+        print(text, flush=True)
+        if self.mode == 'bar' and self.cur: self._draw()
+
+    def _draw(self):
+        line = self._line(self.cur, shutil.get_terminal_size((80, 24)).columns)   # Spyder has no size to ask, and a line that wraps there cannot be redrawn: 80 columns
+        sys.stdout.write('\r' + line + ' ' * max(self.shown - len(line), 0)); sys.stdout.flush()
+        self.shown = len(line)
+
+    def _tick(self):
+        while self.mode != 'off':
+            time.sleep(0.25 if self.mode == 'bar' and not in_ipython() else 1)   # Spyder's console gets fewer redraws
+            with self.lock:
+                st = self.cur
+                if not st: continue
+                try:
+                    if self.mode == 'bar': self._draw()
+                    elif self.mode == 'lines' and time.time() - st.beat >= BEAT:
+                        st.beat = time.time(); head, frac, count, note, times = self._fields(st)
+                        self._out(f'[{clock()}] {head}: ' + ', '.join(x for x in (f'{frac * 100:.0f}%' if frac is not None else '', count, note, times) if x))
+                except Exception: pass   # progress never stops the build, and one bad line does not stop the next
+
+    def _poll(self, st, poll, stop):
+        while not stop.is_set():
+            t, step = time.time(), st.step
+            try: r = poll()
+            except Exception: r = None   # progress never stops the build
+            with self.lock:   # a count read for a step that ended meanwhile is dropped
+                if r and self.cur is st and not stop.is_set() and ('step' in r or st.step == step): self.set(**r)
+            stop.wait(max(self.POLL, (time.time() - t) * 5))   # a slow poll (a walk over tens of thousands of files) runs less often
+
+
+PROG = Progress()
+
+
+def progress_mode(want):   # auto: redraw in a terminal or in Spyder (IPython handles \r), plain lines when the output goes to a file or a pipe
+    if want in ('bar', 'lines', 'off'): return want
+    if want != 'auto': raise BuildError(f'PROGRESS / --progress must be auto, bar, lines or off: {want}')
+    return 'bar' if in_ipython() or (sys.stdout and sys.stdout.isatty()) else 'lines'
+
+
+def tree_size(d):   # (files, bytes) under d; (0, 0) when it does not exist yet
+    n = b = 0; todo = [str(d)]
+    while todo:
+        try: it = os.scandir(todo.pop())
+        except OSError: continue
+        with it:
+            for e in it:
+                try:
+                    if e.is_dir(follow_symlinks=False): todo.append(e.path)
+                    else: n += 1; b += e.stat(follow_symlinks=False).st_size
+                except OSError: pass
+    return n, b
 
 
 def in_ipython():   # Spyder (and Jupyter) run this file inside IPython: input works there, and sys.exit must not be called (it piles an error onto the console)
@@ -45,28 +225,26 @@ def ask(prompt, zh, en):   # zh / en: what is missing, for the error message
     return os.path.expanduser(s)
 
 
-def run(cmd, log, env=None, cwd=None, quiet=False):
-    """Run a subprocess with all its output written to log; stop on a non-zero exit. quiet: report progress to the console once a minute and print only the last lines at the end (the shader build emits tens of thousands of compiler warnings)"""
+def run(cmd, log, env=None, cwd=None, on_line=None):
+    """Run a subprocess with all its output written to log (the console shows the stage line instead: the shader build alone emits tens of thousands of compiler warnings);
+    stop on a non-zero exit, printing the log's last lines. on_line: called with every output line (build_ipa.sh's own step lines move its stages on)"""
     cmd = [str(c) for c in cmd]
     log.parent.mkdir(parents=True, exist_ok=True)
-    tail, n, done = collections.deque(maxlen=40), [0], threading.Event()
-    def beat():   # report even while the subprocess is silent (a cached shader build prints nothing for minutes)
-        t0 = time.time()
-        while not done.wait(BEAT): say(f'……仍在进行，{(time.time() - t0) / 60:.0f} 分钟 | still running, {(time.time() - t0) / 60:.0f} min')
+    tail = collections.deque(maxlen=40)
     p = subprocess.Popen(cmd, env=env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, errors='replace', bufsize=1)
-    if quiet: threading.Thread(target=beat, daemon=True).start()
     try:
         with open(log, 'w') as f:
             for line in p.stdout:
-                f.write(line); tail.append(line); n[0] += 1
-                if not quiet: print(line, end='', flush=True)
+                f.write(line); tail.append(line)
+                if on_line:
+                    try: on_line(line.rstrip('\n'))
+                    except Exception: pass   # progress never stops the build
         p.wait()
     except KeyboardInterrupt:
         p.terminate(); p.wait(); raise
-    finally:
-        done.set()
-    if quiet: print(''.join(list(tail)[-40 if p.returncode else -12:]), end='', flush=True)
     if p.returncode:
+        PROG.end(ok=False)
+        PROG.say(f'---- last lines of {log} ----\n' + ''.join(tail).rstrip('\n'))
         tool = Path(cmd[1] if cmd[0] in (sys.executable, 'bash') else cmd[0]).name
         raise BuildError(f'{tool} 退出码 | exit code {p.returncode}（完整输出 | full output: {log}）')
 
@@ -173,6 +351,7 @@ def can_clone(d):   # whether this volume supports APFS clones (nx_extract uses 
 MAGICS = [(b'UnityFS\0', 'UnityFS'), (b'UnityWeb', 'UnityWeb'), (b'UnityRaw', 'UnityRaw'), (b'BNSH', 'BNSH'), (b'BAHS', 'BAHS'), (b'SARC', 'SARC'), (b'Yaz0', 'Yaz0'),
           (bytes.fromhex('28b52ffd'), 'zstd'), (b'FRES', 'bfres'), (b'BNTX', 'BNTX'), (b'BWAV', 'BWAV'), (b'FSAR', 'BFSAR'), (b'CPK ', 'CRI CPK'), (b'CRID', 'CRI USM'),
           (b'@UTF', 'CRI UTF'), (b'AKPK', 'Wwise pck'), (b'BKHD', 'Wwise bnk'), (b'FSB5', 'FMOD'), (b'\x89PNG', 'PNG'), (b'RIFF', 'RIFF'), (b'OggS', 'Ogg'), (b'PK\x03\x04', 'zip'), (b'NSO0', 'NSO')]
+PACKED = {'UnityFS', 'UnityWeb', 'Yaz0', 'zstd', 'BWAV', 'CRI CPK', 'CRI USM', 'Wwise pck', 'FMOD', 'PNG', 'Ogg', 'zip'}   # file headers of compressed / media formats (zip_store)
 MARKERS = [(b'nvnBootstrapLoader', 'NVN'), (b'vkCreateInstance', 'Vulkan'), (b'eglGetProcAddress', 'EGL / OpenGL'), (b'il2cpp_', 'Unity IL2CPP'), (b'UnityEngine', 'Unity'),
            (b'sead::', 'Nintendo sead'), (b'agl::', 'Nintendo agl'), (b'gsys::', 'Nintendo gsys'), (b'Unreal', 'Unreal'), (b'UE4', 'Unreal 4'), (b'Havok', 'Havok'), (b'CRIWARE', 'CRIWARE'), (b'Wwise', 'Wwise')]
 
@@ -190,14 +369,21 @@ def nso_image(path):   # decompress an NSO's three segments
 
 def survey(nsp_dir, app, fam, keys, repo, py, env):
     work = nsp_dir / f'{app:016X}_survey'; logs, ex = work / 'logs', work / 'extract'
-    say(f'没有 {app:016X} 的游戏档案：只做粗查，不出 IPA | no game profile for {app:016X}: survey only, no IPA')
+    say(f'没有 {app:016X} 的游戏档案：先粗查 | no game profile for {app:016X}: surveying first')
+    PROG.plan(4)   # nx_extract, the manifest, the code modules (reading them, then the rewrite-site census), the imports
+    PROG.stage('survey: build nx_extract')
     nx = build_nx_extract(repo, work, logs, env)
     ups = sorted(fam['updates'], key=lambda u: u[0] or 0)
     upd = ups[-1][1] if ups else None
     tmp = work / 'extract.partial'; rmtree(tmp)
+    def listed():   # files in the manifest so far
+        try: return {'done': (tmp / 'romfs_manifest.tsv').read_bytes().count(b'\n'), 'unit': 'files'}
+        except OSError: return None
+    PROG.stage('survey: RomFS manifest', poll=listed)
     say(f'解出代码模块与 RomFS 清单（不写游戏文件）| extracting the code modules and a RomFS manifest (no game files written) → {ex}')
     run([nx, keys, fam['base'], upd or '-', tmp, '--manifest'], logs / 'extract.log')
     swap_in(tmp, ex)
+    PROG.stage('survey: code modules', step='reading')
     xlog = (logs / 'extract.log').read_text(errors='replace')
     dv = re.search(r'display version (\S+)', xlog)
     R = [f'# 粗查 | Survey: {nacp.name(ex / "control.nacp") or "?"} ({app:016X})', '', f'- 显示版本 | display version: {dv.group(1) if dv else "?"}', f'- 基础版 | base: `{fam["base"].name}` ({fam["base"].stat().st_size / 2**30:.2f} GB)']
@@ -206,10 +392,10 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
 
     # Code modules
     R += ['', '## 代码模块 | Code modules', '', '| 模块 module | 构建号 build ID | text / ro / data (MB) |', '|---|---|---|']
-    found, sdkver, comps, unity, mods, glslc = {}, set(), set(), set(), [], 0
+    found, sdkver, comps, unity, mods, glslc, bids = {}, set(), set(), set(), [], 0, {}
     for p in sorted((ex / 'ExeFS').iterdir()):
         if p.read_bytes()[:4] != b'NSO0': continue
-        img, bid, szs = nso_image(p); mods.append(p)
+        img, bid, szs = nso_image(p); mods.append(p); bids[p.name] = bid
         R.append(f'| {p.name} | `{bid}` | ' + ' / '.join(f'{z / 2**20:.1f}' for z in szs) + ' |')
         sdkver |= {m.decode() for m in re.findall(rb'(?i)NintendoSDK_nnSdk-([0-9_]+)', img)}   # SDK 12 spells it NintendoSdk_, SDK 16 NintendoSDK_
         comps |= {m.decode() for m in re.findall(rb'SDK MW\+Nintendo\+([\w]+-[0-9_]+)', img)}
@@ -217,10 +403,12 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
         if p.name == 'main': glslc = img.count(b'\x91\x68\x86\x19')   # magic of GLSLC compiler outputs (shader_split.py glslc_shaders)
         for pat, name in MARKERS:
             if pat in img: found.setdefault(name, []).append(p.name)
-    npdm = ex / 'ExeFS/main.npdm'
+    npdm, program, sysres = ex / 'ExeFS/main.npdm', app, 0
     if npdm.exists():
         d = npdm.read_bytes(); a = d.find(b'ACI0')
-        if a >= 0: R.append(f'\n- main.npdm 程序号 | program ID: `{struct.unpack_from("<Q", d, a + 0x10)[0]:016X}`')
+        if d[:4] == b'META': sysres = struct.unpack_from('<I', d, 0x14)[0]   # system resource size: non-zero = virtual address memory (Engage, 16 MB)
+        if a >= 0: program = struct.unpack_from("<Q", d, a + 0x10)[0]; R.append(f'\n- main.npdm 程序号 | program ID: `{program:016X}`')
+        R.append(f'- 系统资源 | system resource: {sysres / 2**20:.0f} MB')
     R.append(f'- SDK: {", ".join(sorted(sdkver)) or "?"}（马力欧 | Mario: 16_2_0 / 16_2_12；D2R ≈ 12）')
     R.append('- SDK 组件 | SDK components: ' + (', '.join(sorted(comps)) or '—'))
     if unity: R.append('- Unity: ' + ', '.join(sorted(unity)))
@@ -229,7 +417,7 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
 
     # RomFS manifest
     tops, exts, mags, nfile, nbytes = collections.Counter(), collections.Counter(), collections.Counter(), 0, 0
-    topb, magb = collections.Counter(), collections.Counter()
+    topb, magb, extb, extc, dirs1, biggest = collections.Counter(), collections.Counter(), collections.Counter(), collections.Counter(), collections.Counter(), (0, '')
     for line in (ex / 'romfs_manifest.tsv').read_text(errors='replace').splitlines():
         if line.startswith('#'): continue
         path, size, head = line.split('\t'); size = int(size); h = bytes.fromhex(head)
@@ -237,9 +425,12 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
         parts = path.strip('/').split('/')
         top = '/'.join(parts[:2]) if len(parts) > 2 else parts[0] if len(parts) > 1 else '(根 | root)'   # two levels: Unity keeps everything under Data/
         tops[top] += 1; topb[top] += size
-        exts[os.path.splitext(path)[1].lower() or '(无 | none)'] += 1
+        exts[os.path.splitext(path)[1].lower() or '(无 | none)'] += 1; extb[os.path.splitext(path)[1].lower()] += size
+        if len(parts) > 1: dirs1[parts[0]] += 1
+        biggest = max(biggest, (size, path.strip('/')))
         mag = next((n for m, n in MAGICS if h.startswith(m)), None)
         if mag: mags[mag] += 1; magb[mag] += size
+        if mag in PACKED: extc[os.path.splitext(path)[1].lower()] += 1
     R += ['', f'## RomFS: {nfile} 个文件 | files, {nbytes / 2**30:.2f} GB', '', '| 顶层 top level | 文件 files | GB |', '|---|---|---|']
     R += [f'| {t} | {n} | {topb[t] / 2**30:.2f} |' for t, n in tops.most_common(20)]
     R += ['', '| 文件头 header magic | 文件 files | GB |', '|---|---|---|'] + [f'| {m} | {n} | {magb[m] / 2**30:.2f} |' for m, n in mags.most_common()]
@@ -247,13 +438,15 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
 
     # Rewrite-site census and SDK surface
     R += ['', '## 改写点统计 | Rewrite-site census (insn_census.py)', '', '```']
-    for m in mods:
-        if m.name == 'rtld': continue   # rtld is replaced by the host
-        say(f'统计改写点 | counting rewrite sites: {m.name}')
-        run([py, repo / 'dm/tools/insn_census.py', m], logs / f'census_{m.name}.log', env=env, quiet=True)
+    census = [m for m in mods if m.name != 'rtld']   # rtld is replaced by the host
+    for i, m in enumerate(census):
+        PROG.set(step=f'rewrite sites in {m.name}', done=i, total=len(census), unit='modules')
+        run([py, repo / 'dm/tools/insn_census.py', m], logs / f'census_{m.name}.log', env=env)
         R += (logs / f'census_{m.name}.log').read_text(errors='replace').rstrip().splitlines()
     R += ['```', '', '## 导入与宿主钩子 | Imports vs host hooks (nso_syms.py)', '', '```']
-    run([py, repo / 'dm/tools/nso_syms.py', repo / 'dm/host', '-', ex / 'ExeFS'], logs / 'nso_syms.log', env=env, quiet=True)
+    PROG.stage('survey: imports vs host hooks')
+    run([py, repo / 'dm/tools/nso_syms.py', repo / 'dm/host', '-', ex / 'ExeFS'], logs / 'nso_syms.log', env=env)
+    PROG.end()
     R += (logs / 'nso_syms.log').read_text(errors='replace').rstrip().splitlines() + ['```']
 
     # What it means for a port
@@ -273,6 +466,61 @@ def survey(nsp_dir, app, fam, keys, repo, py, env):
     (work / 'survey.md').write_text('\n'.join(R) + '\n')
     for n in notes: say(n)
     say(f'粗查报告 | survey report: {work / "survey.md"}')
+    upv = ups[-1][0] if ups else None
+    return {'name': nacp.name(ex / 'control.nacp') or '', 'display': dv.group(1) if dv else '?', 'version': 'v0' if upd is None else f'v{upv or 1}', 'bids': bids,
+            'sdk': min((int(v) for v in major if v.isdigit()), default=0), 'sysres': sysres, 'program': program, 'glslc': glslc, 'mags': mags,
+            'dirs': [d for d, _ in dirs1.most_common()], 'marker': biggest[1], 'exts': {e: (exts[e or '(无 | none)'], b, extc[e]) for e, b in extb.items()}}
+
+
+# ---- Provisional profile (a game with no profile in dm/games) ----
+COMPRESSED = ('zstd', 'Yaz0', 'SARC', 'BNSH', 'BAHS', 'UnityFS')   # top-level containers that may hold shaders (then GLSLC outputs in main are not the game's shaders)
+
+
+def ipa_name(name, app):   # "The Legend of Zelda: Link's Awakening" → TheLegendOfZeldaLinksAwakening.ipa: ASCII words joined, apostrophes dropped; the title ID when nothing ASCII is left
+    words = re.findall(r'[A-Za-z0-9]+', name.replace("'", '').replace('’', ''))
+    words = [w.capitalize() if w.isupper() and len(w) > 1 else w[:1].upper() + w[1:] for w in words]
+    return (''.join(words)[:48] or f'{app:016X}') + '.ipa'
+
+
+def write_profile(pdir, app, f):
+    """A provisional game.tsv (+ the empty tables) from the survey, in pdir (outside the repository). An existing game.tsv is kept, so it can be edited by hand; delete it to regenerate.
+    Values follow the existing profiles: SDK 8 / 10 games (Link's Awakening, Super Mario 3D World) need the TTF shared font and NVN API 53.313, newer SDKs the defaults;
+    a game whose NPDM declares a system resource uses virtual address memory and gets Engage's partition (large alias region), the others the 4 GB partition of Breath of the Wild / 13 Sentinels"""
+    pdir.mkdir(parents=True, exist_ok=True)
+    if (pdir / 'game.tsv').exists():
+        say(f'沿用临时游戏档案 | reusing the provisional profile: {pdir / "game.tsv"}（删掉它会按粗查重写 | delete it to regenerate from the survey）')
+        return
+    def order(m): return (m != 'main', m == 'sdk', int(m[6:]) if m.startswith('subsdk') and m[6:].isdigit() else 0)
+    mods = sorted((m for m in f['bids'] if m != 'rtld'), key=order)
+    groups, seen = [], {'main', 'other'}
+    for d in f['dirs'][:24]:   # shader package groups by RomFS top-level folder (this only names the package files; anything else goes to "other")
+        g = re.sub(r'[^a-z0-9]', '', d.lower())[:16] or 'g'
+        while g in seen: g += 'x'
+        seen.add(g); groups.append(f'/{d}/={g}')
+    glslc = f['glslc'] > 0 and not any(f['mags'][m] for m in COMPRESSED)   # shaders compiled into main (13 Sentinels: no shader containers in the RomFS)
+    # stored in the IPA uncompressed: file types that are mostly compressed already (Yaz0 / zstd / zip / media headers; Super Mario Odyssey's 3.8 GB of .szs took the zip 1 h 40 min to deflate again)
+    # and big files (mostly compressed formats without a known header)
+    store = sorted(e for e, (n, b, c) in f['exts'].items() if e and n and (b / n >= 1 << 20 or 2 * c >= n))
+    name = f['name'] or f'{app:016X}'
+    T = '\t'
+    L = ['# 临时游戏档案（scripts/build_ipa_from_nsp.py 按粗查生成，没有人工核对）| Provisional game profile (generated by scripts/build_ipa_from_nsp.py from the survey, not checked by hand)',
+         f'# {name}, SDK {f["sdk"] or "?"}, survey {f["survey"]}', '',
+         '# ---- Identity ----', f'title_id{T}{app:016X}', f'program_id{T}{f["program"]:016X}', '',
+         '# ---- App ----', f'name{T}{name}', f'ipa{T}{ipa_name(name, app)}', f'app_category{T}public.app-category.games', f'pad_layout{T}simple', '',
+         '# ---- Versions ----', T.join(['build', f['version'], f['display']] + [f'{m}={f["bids"][m]}' for m in mods]), f'package{T}{f["version"]}', f'shader_versions{T}{f["version"]}', '',
+         '# ---- Files ----', f'modules{T}{" ".join(mods)}', f'romfs_marker{T}{f["marker"]}', f'zip_store{T}{":".join(store + [".metallib"])}', '']
+    if 0 < f['sdk'] <= 10: L += ['# SDK 8 / 10: the shared-font address points at the TTF itself, and the game wants NVN API 53', f'shared_font{T}ttf', f'device_api{T}53.313', '']
+    if f['sysres'] > 0: L += ['# ---- Memory: the NPDM declares a system resource (virtual address memory), Engage\'s partition ----', f'mem_reserve{T}0x140000000', f'mem_alias{T}0x118000000', f'mem_stack{T}0x10000000', f'app_pool{T}0xA0000000', '']
+    else: L += ['# ---- Memory ----', f'mem_reserve{T}0x100000000', f'mem_alias{T}0x10000000', f'mem_stack{T}0x10000000', f'app_pool{T}0xCD500000', '']
+    L += ['# ---- NVN driver constant segments (Mario\'s values, the translator\'s built-in layout) ----', f'nvn_tex_base{T}0x20', f'nvn_tex_slots{T}32', f'nvn_samp_base{T}0x568', f'nvn_img_base{T}0x120', f'nvn_img_slots{T}8',
+          f'nvn_ssbo_bases{T}vs=0x110 ps=0x510 cs=0x310', '', '# ---- Shader split ----', f'shader_groups{T}{" ".join(groups) or "/=romfs"}', f'shader_note{T}{name} shaders (provisional profile)']
+    if glslc: L += [f'shader_main_glslc{T}on', f'shader_separable{T}on']
+    (pdir / 'game.tsv').write_text('\n'.join(L) + '\n', encoding='utf-8')
+    (pdir / 'shader_map.tsv.conflicts.tsv').write_text(f'# kind: evidence  控制段键冲突裁定：表空 | control-section key conflict rulings: empty\ndm_ctl_sha16{T}chosen_pc{T}class{T}candidates{T}records\n')
+    (pdir / 'bf_want.tsv').write_text('# generated\n')
+    (pdir / 'pso_manifest.tsv').write_text('# Prewarm seed list (shipped in the app, next to shader_map.tsv). Rows: S<TAB>shader key<TAB>stage / R<TAB>render pipeline key (pso_skey hex) / C<TAB>compute shader key.\n'
+                                           '# Provisional profile: empty until recorded on the Mac (DM_PSO_MANIFEST=off DM_PSO_RECORD).\n')
+    say(f'写了临时游戏档案 | wrote a provisional game profile: {pdir / "game.tsv"}')
 
 
 # ---- Steps ----
@@ -290,16 +538,29 @@ def _importable(m):
     except ImportError: return False
 
 
+def extracted(log):   # (files, bytes) from the summary lines nx_extract wrote to log (ExeFS + RomFS); None without them
+    try: rows = re.findall(r'\| (\d+) files ([\d.]+) MB', log.read_text(errors='replace'))
+    except OSError: return None
+    return (sum(int(n) for n, _ in rows), int(sum(float(mb) for _, mb in rows) * 2**20)) if rows else None
+
+
 def extract(nx, keys, ex, name, base, upd, cmp_dir, logs, g):
-    dst, marker = ex / name, g.get('romfs_marker')
+    dst, marker, log = ex / name, g.get('romfs_marker'), logs / f'extract_{name}.log'
     if (dst / 'ExeFS' / 'main').exists() and (dst / 'RomFS' / marker).exists():
+        PROG.stage(f'extract {name}')
         say(f'沿用已解出的 {name} | reusing the extracted {name}: {dst}')
-    else:
-        tmp = ex / (name + '.partial'); rmtree(tmp)
-        say(f'解包 {name} | extracting {name} → {dst}')
-        run([nx, keys, base, upd or '-', tmp] + ([cmp_dir] if cmp_dir else []), logs / f'extract_{name}.log')
-        check_build(tmp, name, g); swap_in(tmp, dst)
-    check_build(dst, name, g)
+        check_build(dst, name, g)
+        PROG.end('reused')
+        return dst
+    tmp = ex / (name + '.partial'); rmtree(tmp)
+    last = extracted(log)   # the last extraction of this version (its log is about to be overwritten) has the exact size; without one, the NSPs' size is the estimate
+    def poll():
+        n, b = tree_size(tmp); return {'done': b, 'note': f'{n:,} files'}
+    PROG.stage(f'extract {name}', poll=poll, unit='B', total=last[1] if last else base.stat().st_size + (upd.stat().st_size if upd else 0), est=not last)
+    run([nx, keys, base, upd or '-', tmp] + ([cmp_dir] if cmp_dir else []), log)
+    check_build(tmp, name, g); swap_in(tmp, dst)
+    n, b = extracted(log) or (0, 0)
+    PROG.end(f'{n:,} files, {amount(b, "B")}')
     return dst
 
 
@@ -312,11 +573,14 @@ def extract_aoc(nx, keys, work, app, fam, logs):
     for tid, ver, p in fam['dlc']:
         k = (ver or 0, p.stat().st_size)
         if tid not in best or k > best[tid][0]: best[tid] = (k, p)
-    for tid, (_, p) in sorted(best.items()):
+    PROG.stage('extract DLC')
+    for i, (tid, (_, p)) in enumerate(sorted(best.items())):
         idx = tid - app - 0x1000
+        PROG.set(step='extracting', done=i, total=len(best), unit='DLC')
         say(f'DLC 序号 {idx} | DLC index {idx}: {p.name}')
         run([nx, keys, '--aoc', p, tmp / str(idx)], logs / f'aoc_{idx}.log')
     swap_in(tmp, work / 'aoc')
+    PROG.end(f'{len(best)} DLC')
     return work / 'aoc'
 
 
@@ -330,37 +594,236 @@ def check_build(d, name, g):   # every module's build ID must be the one registe
 
 def rewrite(py, repo, exe_dir, out, env, logs, g):
     tmp = out.with_name(out.name + '.partial'); rmtree(tmp); tmp.mkdir(parents=True)
-    for m in g.words('modules'):
-        say(f'改写 {m} | rewriting {m}')
+    mods = g.words('modules')
+    PROG.stage('rewrite')
+    for i, m in enumerate(mods):
+        PROG.set(step=m, done=i, total=len(mods), unit='modules')
         run([py, repo / 'dm/tools/patch_nso.py', exe_dir / m, tmp, m], logs / f'rewrite_{m}.log', env=dict(env, DM_RULESET='native'))
     swap_in(tmp, out)
+    PROG.end(', '.join(mods))
+
+
+GLSLC_SECS = 30   # the longest capture run: Three Houses compiles its 9 shaders within 1.2 s of boot, and the run stops as soon as every file the profile names is there
+
+
+def glslc_wanted(g):   # the capture files the profile's shader map was built from (column 5: /glslc_capture/<name>#GLSLC@…); None without any (a provisional profile)
+    try: t = g.table('shader_map.tsv').read_text(errors='replace')
+    except OSError: return None
+    return set(re.findall(r'/glslc_capture/([0-9a-f]{16}\.glslc)#', t)) or None
+
+
+def glslc_done(d):   # capture files written whole: a GLSLC output (magic 0x19866891) holds its own length at +0x44
+    out = set()
+    try: names = [n for n in os.listdir(d) if n.endswith('.glslc')]
+    except OSError: return out
+    for n in names:
+        try: b = (d / n).read_bytes()
+        except OSError: continue
+        if len(b) >= 0x48 and b[:4] == b'\x91\x68\x86\x19' and struct.unpack_from('<I', b, 0x44)[0] == len(b): out.add(n)
+    return out
+
+
+def build_mac_host(repo, out, env, logs, g):
+    """The Mac host for the profile, built into out: dm/host's own compile line (make -n) with the output moved, since make takes no target path with spaces and dm/host/dmhost may be another build's"""
+    host = repo / 'dm/host'
+    run(['make', '-s', f'GAME={g.id}', f'gen/{g.id}/game_profile.h', 'gen/vpx/libvpx.a'], logs / 'mac_host_make.log', env=env, cwd=host)
+    dry = subprocess.run(['make', '-n', '-B', f'GAME={g.id}', 'dmhost'], env=env, cwd=host, capture_output=True, text=True)
+    line = next((l for l in dry.stdout.splitlines() if ' -o dmhost ' in l), None)
+    if not line: raise BuildError(f'make -n 没给出 Mac 宿主的编译行 | make -n gave no compile line for the Mac host: {dry.stderr.strip()[-500:]}')
+    cmd = shlex.split(line); cmd[cmd.index('-o') + 1] = out
+    out.parent.mkdir(parents=True, exist_ok=True)
+    run(cmd, logs / 'mac_host_build.log', env=env, cwd=host)
+    return out
+
+
+def capture_glslc(repo, dirs, pkg_ver, patched, work, env, logs, g):
+    """Profiles with shader_glslc_capture on (Fire Emblem: Three Houses): the game compiles some shaders at run time with its own GLSLC, so no game file holds them. The game boots in the Mac host
+    (headless and silent) with DM_GLSLC_CAPTURE (dm/host/hle_glslc.c), which writes each output to <version dir>/glslc_capture, where shader_split.py reads them; the outputs are the same on every run.
+    dirs: {shader version: its extraction}; a folder that already holds every file the profile's shader map names is reused"""
+    want = glslc_wanted(g)
+    todo = [v for v, d in dirs.items() if not (glslc_done(d / 'glslc_capture') >= want if want else glslc_done(d / 'glslc_capture'))]
+    PROG.stage('GLSLC capture')
+    if not todo:
+        say(f'沿用捕获的运行时着色器 | reusing the captured run-time shaders: {", ".join(str(d / "glslc_capture") for d in dirs.values())}')
+        PROG.end('reused'); return
+    if todo != [pkg_ver]: raise BuildError(f'运行时着色器的捕获跑的是打包版本 {pkg_ver} 的代码，{", ".join(v for v in todo if v != pkg_ver)} 要另外捕获 | the run-time shader capture runs the packed version {pkg_ver}\'s code; {", ".join(v for v in todo if v != pkg_ver)} needs a capture of its own')
+    PROG.set(step='building the Mac host')
+    host = build_mac_host(repo, work / 'tools/dmhost', env, logs, g)
+    d = dirs[pkg_ver]; cap, rd, log = d / 'glslc_capture.partial', work / 'tmp/glslc_run', logs / 'glslc_capture.log'
+    rmtree(cap); rmtree(rd)
+    for s in ('save', 'temp'): (rd / s).mkdir(parents=True)
+    # everything the run writes stays in <id>_build (DM_ROOT is already there): a fresh save and temporary storage, no shader libraries yet, the profile's shader map (the host looks beside itself by default)
+    henv = dict(env, DM_ROMFS=str(d / 'RomFS'), DM_SAVE=str(rd / 'save'), DM_TEMP=str(rd / 'temp'), DM_MSL_DIR=str(rd / 'msl'), DM_NVN_SHMAP=str(g.table('shader_map.tsv')), DM_GLSLC_CAPTURE=str(cap))
+    PROG.set(step='booting the game', done=0, total=len(want) if want else None, unit='shaders')
+    say(f'在 Mac 宿主里启动游戏，捕获它运行时编译的着色器 | booting the game in the Mac host to capture the shaders it compiles at run time → {d / "glslc_capture"}')
+    t0 = time.time()
+    with open(log, 'w') as f:
+        p = subprocess.Popen([str(host), str(patched)], env=henv, cwd=rd, stdout=f, stderr=subprocess.STDOUT)
+        try:   # until every file the profile names is there (Three Houses: within its first frames), the host exits, or GLSLC_SECS pass
+            while True:
+                got = glslc_done(cap); PROG.set(done=len(got & want if want else got))
+                if (want and got >= want) or p.poll() is not None or time.time() - t0 > GLSLC_SECS: break
+                time.sleep(0.25)
+        finally:
+            if p.poll() is None:
+                p.terminate()   # SIGTERM: the host's graceful exit
+                try: p.wait(5)
+                except subprocess.TimeoutExpired: p.kill(); p.wait()
+    got = glslc_done(cap)
+    if not got or (want and not got >= want):
+        PROG.end(ok=False)
+        PROG.say(f'---- last lines of {log} ----\n' + ''.join(collections.deque(open(log, errors='replace'), maxlen=40)).rstrip('\n'))
+        raise BuildError(f'只捕获到 {len(got)} 个运行时着色器' + (f'，游戏档案要 {len(want)} 个' if want else '') + f'（宿主输出 | host output: {log}）| captured only {len(got)} run-time shaders'
+                         + (f', the profile needs {len(want)}' if want else '') + f' (host output: {log})')
+    if want and got - want: say(f'【红】捕获到游戏档案的着色器表里没有的 | captured files the profile\'s shader map does not name: {", ".join(sorted(got - want))}')
+    swap_in(cap, d / 'glslc_capture'); rmtree(rd)
+    PROG.end(f'{len(got)} shaders in {hms(time.time() - t0)}')
 
 
 def data_rows(b):   # a table's data rows (without # comment lines: the header changes with the shader_split.py version, not with the game files)
     return [l for l in b.splitlines() if not l.startswith(b'#')]
 
 
-def split_shaders(py, repo, roms, mains, pkg, env, logs, g):
+def split_shaders(py, repo, roms, mains, pkg, env, logs, g, provisional=False):
     tmp = pkg.with_name(pkg.name + '.partial'); rmtree(tmp); (tmp / 'tables').mkdir(parents=True)
-    say('拆出着色器 | splitting out the shaders')
     names = ('shader_map.tsv', 'shader_facts.tsv', 'shader_pairs.tsv')
+    PROG.stage('shader split')   # a spinner: shader_split.py writes the package and the tables only at the end
     run([py, repo / 'dm/gfx/tools/shader_split.py', ','.join(map(str, roms)), ','.join(map(str, mains)), tmp / 'pkg'] + [tmp / 'tables' / n for n in names], logs / 'shader_split.log', env=env)
-    # Data rows byte-identical to the profile's = the same game files the tables were built from; if not, stop (the profile's tables are left alone). Only data rows are compared: the header of Engage's profile tables was written by an older shader_split
-    diff = [n for n in names if data_rows((tmp / 'tables' / n).read_bytes()) != data_rows(g.table(n).read_bytes())]
-    if diff: raise BuildError(f'拆出的着色器表与游戏档案 {g.id} 的不同 | the split shader tables differ from game profile {g.id}\'s: {", ".join(diff)}（游戏文件不是档案登记的版本？| game files not the versions the profile registers?）')
+    m = re.search(r'着色器 (\d+) 个', (logs / 'shader_split.log').read_text(errors='replace'))
+    if provisional:   # a provisional profile takes the tables as they come
+        for n in names: shutil.copyfile(tmp / 'tables' / n, g.table(n))
+    else:
+        # Data rows byte-identical to the profile's = the same game files the tables were built from; if not, stop (the profile's tables are left alone). Only data rows are compared: the header of Engage's profile tables was written by an older shader_split
+        diff = [n for n in names if data_rows((tmp / 'tables' / n).read_bytes()) != data_rows(g.table(n).read_bytes())]
+        if diff: raise BuildError(f'拆出的着色器表与游戏档案 {g.id} 的不同 | the split shader tables differ from game profile {g.id}\'s: {", ".join(diff)}（游戏文件不是档案登记的版本？| game files not the versions the profile registers?）')
     swap_in(tmp / 'pkg', pkg); rmtree(tmp)
+    PROG.end(f'{int(m.group(1)):,} shaders' if m else '')
 
 
-def build_shaders(py, repo, sh, xlate, env, logs, g):
-    say('出 iOS 着色器库（马力欧首次约 30 分钟，之后走缓存约 7 分钟）| building the iOS shader libraries (Mario: about 30 minutes the first time, about 7 with the cache)')
-    ios = sh / 'ios'
-    run([py, repo / 'dm/gfx/tools/dmsh_build.py', sh / 'pkg', sh / 'cache'], logs / 'dmsh_build.log', env=dict(env, XLATE=str(xlate), IOSOUT=str(ios)), quiet=True)
+class ShaderWatch:
+    """Progress of dmsh_build.py, read from the files it writes (it prints nothing until it ends). It works in three phases:
+    the cache check (a hit restores <key>_b.json into the iOS output b-<chain>/, a miss writes <key>.bin into its temporary folder dmsh_* under WORK),
+    the translation of the misses (<key>.spv in the temporary folder), and the compile, which takes the keys in a fixed order (sorted, the vertex shaders with pixel pairs last)
+    and writes <key>_b.json again for every miss and every pixel shader: the furthest key written so far tells how far it got"""
+    def __init__(self, g, ios, tmp):
+        keys = set()
+        for ln in open(g.table('shader_map.tsv'), errors='replace'):   # the keys dmsh_build.py builds: column 4 of the rows from a shader package or from main
+            c = ln.rstrip('\n').split('\t')
+            if len(c) > 4 and (c[0].endswith('.bin') or c[0].startswith('main.rodata@')): keys.add(c[3])
+        pairs = {ln.split()[0] for ln in open(g.table('shader_pairs.tsv'), errors='replace') if ln.strip() and not ln.startswith('#')}
+        order = sorted(keys - pairs) + sorted(keys & pairs)
+        self.pos, self.n = {k: i for i, k in enumerate(order)}, len(order)
+        chain = re.search(r'#define DMSH_CHAIN "(.*)"', g.table('dmsh_chain.h').read_text()).group(1)
+        self.out, self.tmp, self.t0, self.t1, self.w = ios / f'b-{chain}', tmp, time.time(), None, None
+        self.hits, self.fin, self.top = set(), set(), -1
+
+    def written(self, keys, since):   # those of keys whose <key>_b.json in the iOS output was written after since
+        found = set()
+        try:
+            with os.scandir(self.out) as it:
+                for e in it:
+                    if e.name.endswith('_b.json') and e.name[:-7] in keys and e.stat().st_mtime > since: found.add(e.name[:-7])
+        except OSError: pass
+        return found
+
+    def __call__(self):
+        if not self.w:   # dmsh_build.py's temporary folder: the dmsh_* under WORK made since it started
+            self.w = max((d for d in self.tmp.glob('dmsh_*') if d.stat().st_birthtime >= self.t0 - 2), key=lambda d: d.stat().st_birthtime, default=None)
+        try: ext = collections.Counter(os.path.splitext(x)[1] for x in os.listdir(self.w)) if self.w else collections.Counter()
+        except OSError: ext = collections.Counter()
+        if self.t1 is None:
+            self.hits |= self.written(self.pos.keys() - self.hits, self.t0 - 2)
+            if len(self.hits) + ext['.bin'] < self.n and not ext['.spv'] and not ext['.metal']:
+                return {'step': 'cache check', 'done': len(self.hits) + ext['.bin'], 'total': self.n, 'unit': 'shaders', 'note': f'{len(self.hits):,} cached'}
+            self.t1 = time.time()   # the cache check is over: from now on a <key>_b.json is written by the compile
+        if ext['.bin'] and not ext['.metal'] and ext['.spv'] < ext['.bin']:
+            return {'step': 'translating', 'done': ext['.spv'], 'total': ext['.bin'], 'unit': 'shaders'}
+        new = self.written(self.pos.keys() - self.fin, self.t1)
+        self.fin |= new; self.top = max([self.top] + [self.pos[k] for k in new])
+        return {'step': 'compiling' if ext['.bin'] else 'finishing', 'done': max(len(self.fin), self.top + 1), 'total': self.n, 'unit': 'shaders',
+                'note': f'{ext[".bin"]:,} not cached' if ext['.bin'] else ''}
+
+
+def build_shaders(py, repo, sh, xlate, env, logs, g, provisional=False, with_ios=True):
+    ios, log = sh / 'ios', logs / 'dmsh_build.log'
+    platform = 'iOS' if with_ios else 'macOS'
+    PROG.stage(f'{platform} shaders')
+    PROG.set(step='chain header')
+    run([py, repo / 'dm/gfx/tools/dmsh_chain.py', '--header'], logs / 'dmsh_chain.log', env=env)
+    try: PROG.watch(ShaderWatch(g, ios if with_ios else sh / 'cache', Path(env['WORK'])))
+    except Exception: pass   # progress never stops the build (a missing table is dmsh_build.py's to report)
+    shader_env = dict(env, XLATE=str(xlate))
+    if with_ios: shader_env['IOSOUT'] = str(ios)
+    else: shader_env.pop('IOSOUT', None)
+    run([py, repo / 'dm/gfx/tools/dmsh_build.py', sh / 'pkg', sh / 'cache'], log, env=shader_env)
+    PROG.watch(None)
     chain = re.search(r'#define DMSH_CHAIN "(.*)"', g.table('dmsh_chain.h').read_text()).group(1)
-    libs = ios / f'b-{chain}'
+    PROG.set(step='c1 guard')
+    run([py, repo / 'dm/gfx/tools/c1_guard.py', sh / 'cache' / f'b-{chain}', g.table('c1_full.tsv')], logs / 'c1_guard.log', env=env)
+    libs = (ios if with_ios else sh / 'cache') / f'b-{chain}'
     n = sum(1 for _ in libs.glob('*_b.metallib')) if libs.is_dir() else 0
-    if n == 0: raise BuildError(f'没出 iOS 着色器库 | no iOS shader libraries in {libs}')
-    say(f'iOS 着色器库 {n} 个 | {n} iOS shader libraries ({libs})')
-    return ios
+    if n == 0: raise BuildError(f'没出 {platform} 着色器库 | no {platform} shader libraries in {libs}')
+    say(f'{platform} 着色器库 {n} 个 | {n} {platform} shader libraries ({libs})')
+    t = log.read_text(errors='replace')
+    m, c = re.search(r'着色器 (\d+)：成功 (\d+)', t), re.search(r'前置缓存：命中 (\d+)', t)
+    if m:
+        total, ok = int(m.group(1)), int(m.group(2))
+        PROG.end(f'{ok:,} of {total:,} shaders ready' + (f' ({int(c.group(1)):,} from the cache)' if c else '') + (f'; {total - ok:,} failed, reasons at the end of {log}' if ok < total else ''))
+    else: PROG.end()
+    return ios if with_ios else sh / 'cache'
+
+
+class IpaWatch:
+    """Progress of build_ipa.sh, from its step lines ("[time] generate Gen/ …", "xcodebuild …", "assemble Payload …", "zip …") and the files it writes:
+    the CompileC lines in xcodebuild's build.log (one per source file: Gen/src, Gen/main/main.c, Gen/embed.S and the app's Sources), the bytes copied into Payload/DmIOS.app/romfs,
+    and the bytes of the archive zip is writing (a zi* temporary file next to out.ipa, renamed at the end). Its two halves are the stages "app build" and "IPA pack" """
+    XCODE = {'CompileC': 'compiling', 'Ld': 'linking', 'CpResource': 'copying resources', 'CompileAssetCatalogVariant': 'asset catalog', 'ProcessInfoPlistFile': 'Info.plist'}
+
+    def __init__(self, repo, w, romfs, out_ipa):
+        self.ios, self.o, self.romfs = repo / 'dm/ios', w / 'build/ios/pkg', romfs
+        self.last = out_ipa.stat().st_size if out_ipa.is_file() else None   # the last IPA's size: the expected size of the new archive
+        self.state, self.t, self.off, self.compiled, self.what, self.total, self.most, self.lock = None, 0, 0, 0, '', None, 0, threading.Lock()
+
+    def line(self, line):   # a line of build_ipa.sh's output
+        s = re.sub(r'^\[[\d:]+\] ', '', line)
+        with self.lock:   # a poll sees a step change whole
+            if s.startswith('generate Gen/'): self.state = 'gen'; PROG.set(step='generating sources')
+            elif s.startswith('xcodebuild'):
+                units = len(os.listdir(self.ios / 'Gen/src')) + 2 + sum(1 for p in (self.ios / 'Sources').iterdir() if p.suffix in ('.c', '.m'))   # + Gen/main/main.c and Gen/embed.S
+                self.state, self.t = 'xcode', time.time(); PROG.set(step='xcodebuild', done=0, total=units, unit='files', est=True)   # an incremental build compiles fewer
+            elif s.startswith('assemble Payload'):
+                try: self._poll()   # the rest of build.log (xcodebuild writes it in big blocks)
+                except OSError: pass
+                PROG.end(f'{self.compiled:,} file{"" if self.compiled == 1 else "s"} compiled')
+                self.state, self.total, self.most = 'copy', None, 0; PROG.stage('IPA pack', poll=self.poll, step='copying the game files', unit='B')
+            elif s.startswith('zip'): self.state, self.total, self.most = 'zip', None, 0; PROG.set(step='zip', unit='B')
+
+    def poll(self):   # from the poll thread
+        with self.lock: return self._poll()
+
+    def _poll(self):
+        state = self.state
+        if state == 'xcode':
+            log = self.o / 'build.log'
+            if log.stat().st_mtime < self.t - 1: return None   # still the last build's log
+            if log.stat().st_size < self.off: self.off = self.compiled = 0
+            with open(log, 'rb') as f: f.seek(self.off); chunk = f.read()
+            chunk = chunk[:chunk.rfind(b'\n') + 1]; self.off += len(chunk)
+            for ln in chunk.split(b'\n'):
+                w = ln.split(b' ', 1)[0].decode(errors='replace')
+                if w == 'CompileC': self.compiled += 1
+                self.what = self.XCODE.get(w, self.what)
+            r = {'done': self.compiled, 'note': self.what}
+        elif state == 'copy':
+            if self.total is None: self.total = tree_size(self.romfs)[1]
+            self.most = max(self.most, tree_size(self.o / 'Payload/DmIOS.app/romfs')[1])   # never backwards: the copy and the archive leave pkg/ at the end
+            r = {'done': self.most, 'total': self.total}
+        elif state == 'zip':
+            if self.total is None: self.total = self.last or tree_size(self.o / 'Payload')[1]
+            self.most = max([self.most] + [e.stat().st_size for e in os.scandir(self.o) if e.is_file() and e.name != 'build.log'])
+            r = {'done': self.most, 'total': self.total, 'est': True}
+        else: return None
+        return r
 
 
 def find_repo(here):   # this file lives in the repository's scripts/; walk up to the level that has dm/tools/nx_extract/Program.cs
@@ -373,7 +836,7 @@ def parse_args(argv):
     """Command-line options: when given they override "Settings"; F5 in Spyder passes none, so "Settings" is used as is. -h shows the help"""
     import argparse
     ap = argparse.ArgumentParser(prog='build_ipa_from_nsp.py',
-        description='从 NSP 出未签名 IPA；没有游戏档案的游戏只写粗查报告 | Build an unsigned IPA from a game\'s NSPs; a game with no profile only gets a survey.',
+        description='从 NSP 出未签名 IPA；没有游戏档案的游戏先粗查，再按临时档案尽力出包 | Build an unsigned IPA from a game\'s NSPs; a game with no profile is surveyed and gets a best-effort IPA from a provisional profile.',
         epilog='例 | example: python3 scripts/build_ipa_from_nsp.py ~/nsp/"Super Mario Bros Wonder" -k ~/keys/prod.keys')
     ap.add_argument('nsp_dir', nargs='?', help='放一个游戏 NSP 的文件夹（缺省 = 设置 NSP_DIR，再没有就问）| folder holding one game\'s NSPs (default: the NSP_DIR setting, else asked)')
     ap.add_argument('-k', '--keys', help='prod.keys 的路径（缺省 = 设置 PROD_KEYS，再没有就问）| path of prod.keys (default: the PROD_KEYS setting, else asked)')
@@ -383,11 +846,16 @@ def parse_args(argv):
     ap.add_argument('--bundle-id', help='App 的包名（缺省 = org.nxnative.<基础版标题号小写>）| the app\'s bundle ID (default: org.nxnative.<base game title ID in lowercase>)')
     ap.add_argument('--keep-extracted', action='store_true', help='出包后保留解出的游戏文件 | keep the extracted game files after the IPA is built')
     ap.add_argument('--env-file', help='诊断包的环境开关文件（每行 KEY=VALUE）| environment switches for a diagnostic build (one KEY=VALUE per line)')
+    ap.add_argument('--survey-only', action='store_true', help='没有游戏档案的游戏只写粗查报告，不生成临时档案、不出 IPA | a game with no profile: only the survey, no provisional profile and no IPA')
+    ap.add_argument('--profile-out', help='临时游戏档案放哪（缺省 = <NSP 文件夹>/<标题号>_build/profile）| where the provisional profile goes (default: <NSP folder>/<title ID>_build/profile)')
+    ap.add_argument('--progress', choices=('auto', 'bar', 'lines', 'off'), help='stage lines on the console: bar = one line per stage, redrawn in place; lines = a plain line every BEAT seconds; off = only each stage\'s start and end '
+                    '(default: the PROGRESS setting; auto = bar in a terminal or Spyder, lines when the output goes to a file or a pipe)')
     return ap.parse_args(argv)
 
 
 def main(args=None):
     args = args or parse_args([])
+    PROG.mode = progress_mode(args.progress or PROGRESS)
     here = Path(globals().get('__file__') or sys.argv[0]).resolve()
     repo = find_repo(here)
     sys.path.insert(0, str(repo / 'dm/games')); import game as gamemod   # game profiles
@@ -400,13 +868,24 @@ def main(args=None):
     env.setdefault('USER', getpass.getuser())   # xcodegen fails without USER (Couldn't find current username)
     py = sys.executable
     app, fam = scan_nsps(nsp_dir)
-    g = gamemod.by_title(app)
-    if g is None:   # no game profile: survey only
+    g, provisional = gamemod.by_title(app), False
+    if g is None:   # no game profile: survey, then (unless --survey-only) a provisional profile outside the repository and a best-effort IPA
         missing = [m for m in ('lz4.block', 'capstone') if not _importable(m)]
         if missing: raise BuildError(f'当前 Python（{sys.executable}）缺模块 | the current Python is missing modules: {", ".join(missing)}')
         if not shutil.which('dotnet', path=env['PATH']): raise BuildError('找不到 dotnet（.NET SDK 10）| dotnet not found (.NET SDK 10)')
-        return survey(nsp_dir, app, fam, keys, repo, py, env)
-    say(f'游戏档案 | game profile: {g.id}')
+        pdir = Path(os.path.expanduser(args.profile_out or PROFILE_OUT)).resolve() if (args.profile_out or PROFILE_OUT) else nsp_dir / f'{app:016X}_build' / 'profile'
+        if (pdir / f'{app:016X}' / 'game.tsv').exists() and not (args.survey_only or SURVEY_ONLY):
+            say(f'没有 {app:016X} 的游戏档案，沿用上次生成的临时档案（删掉它会重新粗查）| no game profile for {app:016X}: reusing the provisional profile from the last run (delete it to survey again)')
+        else:
+            facts = survey(nsp_dir, app, fam, keys, repo, py, env)
+            if args.survey_only or SURVEY_ONLY: return
+            facts['survey'] = str(nsp_dir / f'{app:016X}_survey' / 'survey.md')
+            write_profile(pdir / f'{app:016X}', app, facts)
+        # the profile folder joins the search path of game.py, which the shader tools, make and build_ipa.sh all use (DM_GAMES_DIR)
+        os.environ['DM_GAMES_DIR'] = env['DM_GAMES_DIR'] = os.pathsep.join([str(pdir)] + [d for d in os.environ.get('DM_GAMES_DIR', '').split(os.pathsep) if d and d != str(pdir)])
+        g, provisional = gamemod.load(f'{app:016X}'), True
+        say('【红】临时游戏档案：按粗查猜的值，游戏可能起不来；出包后按 docs/agents 起机 | provisional game profile: values guessed from the survey, the game may not boot; bring it up per docs/agents after packing')
+    say(f'游戏档案 | game profile: {g.id}{"（临时 | provisional: " + str(g.dir) + "）" if provisional else ""}')
     builds, need = g.builds(), g.words('shader_versions')
     pkg_ver = args.package or PACKAGE or g.get('package')
     if pkg_ver not in builds: raise BuildError(f"打进 IPA 的版本（-p / PACKAGE）只能是游戏档案登记的 | the version to pack (-p / PACKAGE) must be one the game profile registers: {', '.join(builds)}")
@@ -425,8 +904,11 @@ def main(args=None):
     ex = work / 'extract'; ex.mkdir(parents=True, exist_ok=True); (work / 'tmp').mkdir(exist_ok=True)
     gb = sum({p.stat().st_size for b, u in picks.values() for p in (b, u) if p}) / 2**30 + 6   # extraction + shader cache + slack
     if free_gb(work) < gb and not all((ex / v).exists() for v in versions): raise BuildError(f'{work} 所在的卷剩余不足 {gb:.0f} GB | less than {gb:.0f} GB free on the volume of {work}')
-    say('编译 nx_extract | building nx_extract')
+    glslc = g.get('shader_glslc_capture', 'off') == 'on'   # shaders the game compiles at run time, captured in the Mac host (capture_glslc)
+    PROG.plan(1 + len(versions) + bool(fam['dlc']) + glslc + 5)   # nx_extract, each version's extraction, the DLC, rewrite, the GLSLC capture, shader split, iOS shaders, app build, IPA pack
+    PROG.stage('build nx_extract')
     nx = build_nx_extract(repo, work, logs, env)
+    PROG.end()
     dirs, clone = {}, None
     for ver in versions:   # the base game is extracted alone first; later updates clone against its RomFS
         b, u = picks[ver]
@@ -439,38 +921,50 @@ def main(args=None):
     app_name = args.app_name or APP_NAME or nacp.name(base / 'control.nacp')
     if not app_name: raise BuildError(f'基础版解包里读不出游戏名（{base / "control.nacp"}；旧的解包没存它：删掉 extract/ 重跑，或用 --app-name 指定）| no game name in the base extraction ({base / "control.nacp"}; an older extraction did not save it: delete extract/ and run again, or give --app-name)')
     bundle_id = args.bundle_id or BUNDLE_ID or f'org.nxnative.{app:016x}'
-    say(f'App 名 | app name: {app_name}；包名 | bundle ID: {bundle_id}')
+    # the app version is the packed game's display version: the update's control data when an update is packed (nx_extract saves it next to the RomFS), else the base game's
+    app_version = nacp.version(game / 'control.nacp') or nacp.version(base / 'control.nacp')
+    say(f'App 名 | app name: {app_name}；版本 | version: {app_version or "1.0"}；包名 | bundle ID: {bundle_id}')
 
     patched = work / f'patched_{pkg_ver}'
     rewrite(py, repo, game / 'ExeFS', patched, env, logs, g)
+    if glslc: capture_glslc(repo, {v: dirs[v] for v in need}, pkg_ver, patched, work, env, logs, g)
     sh = work / 'shader'
-    split_shaders(py, repo, [dirs[v] / 'RomFS' for v in need], [dirs[v] / 'ExeFS/main' for v in need], sh / 'pkg', env, logs, g)
-    ios = build_shaders(py, repo, sh, xlate, env, logs, g)
+    split_shaders(py, repo, [dirs[v] / 'RomFS' for v in need], [dirs[v] / 'ExeFS/main' for v in need], sh / 'pkg', env, logs, g, provisional)
+    ios = build_shaders(py, repo, sh, xlate, env, logs, g, provisional)
 
     if free_gb(out_ipa.parent) < 5: raise BuildError(f'{out_ipa.parent} 所在的卷剩余不足 5 GB | less than 5 GB free on the volume of {out_ipa.parent}')
     say(f'出 IPA | building the IPA → {out_ipa}')
     ipa_env = dict(env, GAME=g.id, W=str(work / 'ipa'), PATCHED=str(patched), ROMFS=str(game / 'RomFS'), MSL_IOS=str(ios), FONT_PY=py, DM_DISPLAY_NAME=app_name, DM_BUNDLE_ID=bundle_id, AOC=str(aoc or ''))
+    if app_version: ipa_env['DM_APP_VERSION'] = app_version
     # app icon: the game icon nx_extract saved from the control data (English, icon.jpg); the packed version's first, then the base game's
     icon = next((d / 'icon.jpg' for d in (game, base) if (d / 'icon.jpg').exists()), None)
     if icon: ipa_env['DM_ICON'] = str(icon); say(f'App 图标 | app icon: {icon}')
     else: say('【红】解包里没有游戏图标（之前的解包没存图标：删掉 extract/ 重跑即可补上）；主屏图标会是空白 | no game icon in the extraction (an older extraction did not save it: delete extract/ and run again); the home-screen icon will be blank')
     env_file = args.env_file or DM_ENV_FILE
     if env_file: ipa_env['DM_ENV_FILE'] = str(Path(os.path.expanduser(env_file)).resolve())
-    run(['bash', repo / 'dm/ios/tools/build_ipa.sh', out_ipa], logs / 'build_ipa.log', env=ipa_env)
+    watch = IpaWatch(repo, work / 'ipa', game / 'RomFS', out_ipa)
+    PROG.stage('app build', poll=watch.poll, step='starting')   # build_ipa.sh's "assemble Payload" line starts the stage "IPA pack"
+    run(['bash', repo / 'dm/ios/tools/build_ipa.sh', out_ipa], logs / 'build_ipa.log', env=ipa_env, on_line=watch.line)
     if not out_ipa.is_file(): raise BuildError(f'没出 IPA | no IPA at {out_ipa}')
+    PROG.end(f'{out_ipa.name}, {amount(out_ipa.stat().st_size, "B")}')
     rmtree(work / 'tmp')
     if not (args.keep_extracted or KEEP_EXTRACTED):
         say(f'删掉解出的游戏文件 | deleting the extracted game files: {ex}'); rmtree(ex)
     say(f'完成 | done: {out_ipa}（{out_ipa.stat().st_size / 2**30:.1f} GB）')
+    if provisional:
+        say(f'【红】这是按临时游戏档案出的包，游戏可能起不来 | this IPA was built from a provisional game profile and the game may not boot: {g.dir}')
+        say(f'  Mac 上起机：DM_GAMES_DIR="{g.dir.parent}" make -C dm/host GAME={g.id} dmhost，见 docs/agents | bring-up on the Mac: DM_GAMES_DIR="{g.dir.parent}" make -C dm/host GAME={g.id} dmhost, see docs/agents')
 
 
 def cli(argv):   # returns the exit code: 0 done, 1 error, 130 interrupted
     try:
         main(parse_args(argv))
     except BuildError as e:
-        print(f'【红】{e}', flush=True); return 1
+        PROG.close(ok=False); print(f'【红】{e}', flush=True); return 1
     except KeyboardInterrupt:
-        print('【红】中断 | interrupted', flush=True); return 130
+        PROG.close(ok=False); print('【红】中断 | interrupted', flush=True); return 130
+    finally:
+        PROG.close(ok=False)   # an unexpected error: end the stage line before the traceback
     return 0
 
 

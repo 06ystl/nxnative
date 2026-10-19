@@ -73,7 +73,7 @@ class PackagingTests(unittest.TestCase):
             plistlib.dump({'CFBundleIdentifier': 'org.nxnative.fixture'}, f)
         (out / 'previous-build').write_text('keep me')
 
-        def run(cmd, log, **kwargs):
+        def run(cmd, log, env=None, cwd=None, on_line=None):
             if cmd[0] == 'python-fixture': Path(cmd[-1]).write_bytes(b'font')
             if cmd[0] == 'codesign':
                 with (Path(cmd[-1]) / 'Contents/Info.plist').open('rb') as f: info = plistlib.load(f)
@@ -84,7 +84,7 @@ class PackagingTests(unittest.TestCase):
         with patch('package_app.subprocess.check_output', return_value='arm64'):
             with self.assertRaisesRegex(RuntimeError, 'signature failed'):
                 build_app(repo, self.root, out, profile, patched, romfs, self.msl,
-                          'Fixture', 'org.nxnative.fixture', '1.0', None, None, None,
+                          'Fixture', 'org.nxnative.fixture', '1.0', font, None, None,
                           {'FONT_PY': 'python-fixture', 'STD_FONT': str(font)}, run, lambda _: False)
         self.assertEqual((out / 'previous-build').read_text(), 'keep me')
         self.assertTrue((romfs / 'resource').is_file())

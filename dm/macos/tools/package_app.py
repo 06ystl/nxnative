@@ -90,6 +90,7 @@ def build_app(repo, work, out, g, patched, romfs, msl, app_name, bundle_id,
                     CFBundleVersion='1', LSMinimumSystemVersion=minimum,
                     LSArchitecturePriority=['arm64'], LSRequiresNativeExecution=True,
                     NSHighResolutionCapable=True, LSSupportsGameMode=True,
+                    NSLocalNetworkUsageDescription='Connect to your phone for gyroscope and accelerometer input.',
                     GCSupportsControllerUserInteraction=True,
                     GCSupportedGameControllers=[{'ProfileName': 'ExtendedGamepad'}],
                     LSApplicationCategoryType=g.get('app_category'))
@@ -99,7 +100,7 @@ def build_app(repo, work, out, g, patched, romfs, msl, app_name, bundle_id,
                 for scale in (1, 2):
                     filename = f'icon_{size}x{size}' + ('@2x' if scale == 2 else '') + '.png'
                     run(['sips', '-s', 'format', 'png', '-z', str(size * scale), str(size * scale),
-                         icon, '--out', iconset / filename], logs / f'icon_{size}_{scale}.log', env=env, quiet=True)
+                         icon, '--out', iconset / filename], logs / f'icon_{size}_{scale}.log', env=env)
             run(['iconutil', '-c', 'icns', iconset, '-o', res / 'AppIcon.icns'], logs / 'icon.log', env=env)
             info['CFBundleIconFile'] = 'AppIcon.icns'
         with (contents / 'Info.plist').open('wb') as f: plistlib.dump(info, f)

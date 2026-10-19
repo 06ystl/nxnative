@@ -1,6 +1,7 @@
 // nn::hid (controller): on the real device shared memory is read through the hid service; the host takes the current state written by the front end (Mac keyboard / controller, iOS virtual gamepad / controller).
 // Generic, game-independent version: one standard controller. DM_OPMODE=0 (handheld) → handheld controller (Npad id 0x20); otherwise → 1P full-key controller (id 0).
-// Vibration, six-axis, mouse, keyboard: not provided by the host (device count 0 / not connected); the controller applet reports "1 player, current controller selected".
+// Motion and vibration are optional frontend capabilities. Mouse and keyboard
+// devices remain unavailable. The controller applet reports one selected player.
 #include "hle.h"
 #include "dm_input.h"
 #include <stdatomic.h>
@@ -8,6 +9,7 @@
 #include <strings.h>
 #include <pthread.h>
 #include <time.h>
+#include <math.h>
 
 enum { NPAD_NO1 = 0, NPAD_HANDHELD = 0x20 };
 enum { STYLE_FULLKEY = 1u << 0, STYLE_HANDHELD = 1u << 1, STYLE_JOYDUAL = 1u << 2, STYLE_JOYLEFT = 1u << 3, STYLE_JOYRIGHT = 1u << 4 };
@@ -21,7 +23,7 @@ _Static_assert(sizeof(NpadState) == 0x28, "NpadState");
 
 // Front-end publishing: the keyboard / touch path (dm_input_set) and the physical controller path (dm_pad_set) are ORed; press edges are latched until the game's next read so short presses are not lost
 static _Atomic uint64_t g_btn, g_axes, g_latch, g_pad_btn, g_pad_axes, g_pad_latch;
-static _Atomic int64_t g_sampling;
+static _Atomic int64_t g_sampling = 1 << 16;   // starts high so the history entries below the newest keep positive sampling numbers
 static uint64_t pack(int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     return (uint64_t)(uint16_t)lx | (uint64_t)(uint16_t)ly << 16 | (uint64_t)(uint16_t)rx << 32 | (uint64_t)(uint16_t)ry << 48;
 }
@@ -64,12 +66,18 @@ void hid_keys_init(void) {
             static const char *const sticks[4] = {"LLeft", "LUp", "LRight", "LDown"};
             static const int sx[4] = {-32767, 0, 32767, 0}, sy[4] = {0, 32767, 0, -32767};
             for (int d = 0; d < 4; d++) if (!strcasecmp(k, sticks[d])) { if (sx[d]) st.lx = sx[d]; if (sy[d]) st.ly = sy[d]; found = 1; }
-            static const char *const right_sticks[4] = {"RLeft", "RUp", "RRight", "RDown"};
-            for (int d = 0; d < 4; d++) if (!strcasecmp(k, right_sticks[d])) { if (sx[d]) st.rx = sx[d]; if (sy[d]) st.ry = sy[d]; found = 1; }
+            // right stick the same way: RLeft RUp RRight RDown (camera; Super Mario Odyssey's first hint asks for it)
+            static const char *const rsticks[4] = {"RLeft", "RUp", "RRight", "RDown"};
+            for (int d = 0; d < 4; d++) if (!strcasecmp(k, rsticks[d])) { if (sx[d]) st.rx = sx[d]; if (sy[d]) st.ry = sy[d]; found = 1; }
             if (!found) LOG("【红】DM_KEYS 不认识的键名：%s", k);
             k = plus ? plus + 1 : NULL; }
         for (int i = 0; i < rep && g_nsteps < KEY_STEPS; i++) { g_steps[g_nsteps] = st; g_steps[g_nsteps++].at = st.at + i * every; }
     }
+    // Steps run in time order, so repeated groups interleave ("290:A*200/3,291:Left*200/3,291.5:A*200/3" = A, Left, A every 3 s): they used to run in list order, one group after the
+    // other, and a group listed after a long repeat waited for all of it. A stable sort keeps the listed order of steps at the same time; times and frame numbers are not comparable, so a list
+    // that mixes them keeps its listed order
+    int mixed = 0; for (int i = 1; i < g_nsteps; i++) mixed |= g_steps[i].frame != g_steps[0].frame;
+    if (!mixed) for (int i = 1; i < g_nsteps; i++) { key_step s = g_steps[i]; int j = i; while (j > 0 && g_steps[j - 1].at > s.at) { g_steps[j] = g_steps[j - 1]; j--; } g_steps[j] = s; }
     pthread_t th; if (g_nsteps && !pthread_create(&th, NULL, keys_main, NULL)) { pthread_detach(th); LOG("DM_KEYS：%d 步", g_nsteps); }
 }
 
@@ -98,8 +106,16 @@ static void fill(NpadState *s, uint32_t id, uint32_t style) {
     s->buttons = b;
     s->attributes = ATTR_CONNECTED | (id == NPAD_HANDHELD ? ATTR_WIRED | ATTR_LEFT_CONN | ATTR_LEFT_WIRED | ATTR_RIGHT_CONN | ATTR_RIGHT_WIRED : ATTR_LEFT_CONN | ATTR_RIGHT_CONN);
 }
-// GetNpadStates(out, n, id): returns the number written, newest first. The host keeps no history: only 1 current state (callers handle the returned count)
-static int states(NpadState *out, int n, uint32_t id, uint32_t style) { if (n <= 0) return 0; fill(out, id, style); return 1; }
+// GetNpadStates(out, n, id): newest first, n entries: the current state repeated with consecutive sampling numbers. The host keeps no history, but on hardware the
+// 16-entry history is always full, and games read all of it whatever count comes back: Super Mario Odyssey (main+0x93fc20) polls every controller slot each frame, which advances
+// the shared sampling number by about 16 per frame, and with only entry 0 written neither stick did anything in play (the camera did not turn at its first hint) while buttons
+// and menus (the stick's direction bits) worked; with every entry written the camera turns
+static int states(NpadState *out, int n, uint32_t id, uint32_t style) {
+    if (n <= 0) return 0;
+    fill(out, id, style);
+    for (int i = 1; i < n; i++) { out[i] = out[0]; out[i].sampling = out[0].sampling - i; }
+    return n;
+}
 
 HLE_FORCE("_ZN2nn3hid14InitializeNpadEv", "连 hid 服务；宿主从前端状态取输入", void, h_hid_InitNpad, void) {}
 HLE_FORCE("_ZN2nn3hid22SetSupportedNpadIdTypeEPKjm", "支持的手柄号；宿主固定", void, h_hid_SetIds, const uint32_t *ids, uint64_t n) { (void)ids; (void)n; }
@@ -123,21 +139,99 @@ HLE_FORCE("_ZN2nn3hid20StopLrAssignmentModeEv", "L/R 分配模式；宿主忽略
 // Controller applet (system UI): report "1 player, current controller selected" directly. ControllerSupportResultInfo = { int playerCount; uint32_t selectedId; }
 HLE_FORCE("_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoERKNS0_20ControllerSupportArgE", "手柄小程序；宿主直接报已选好",
           Result, h_hid_ShowCtrl, int32_t *info, const void *arg) { (void)arg; if (info) { info[0] = 1; info[1] = (int32_t)connected_id(); } return RES_OK; }
-// Six-axis: handles are handed out, but no states can be read (0 entries)
+// Six-axis handles use Horizon's style/player/device fields. The one frontend
+// motion source belongs to the same single player as the keyboard/gamepad.
+int (*dm_motion_read)(dm_sixaxis_state *state, int fusion);
+static _Atomic unsigned g_six_started[2], g_six_fusion[2] = {1, 1};
+static _Atomic int g_six_drift[2] = {1, 1};
+static _Atomic float g_six_params[2][2] = {{0.03f, 0.4f}, {0.03f, 0.4f}};
+static uint32_t six_handle(uint32_t id) { return 2u << 16 | (id == NPAD_HANDHELD ? 8u << 8 | 4u : 3u); }
+static int six_index(const uint32_t *h) {
+    if (!h || *h != six_handle(connected_id())) return -1;
+    return connected_id() == NPAD_HANDHELD;
+}
+static int six_state(dm_sixaxis_state *out, const uint32_t *h) {
+    memset(out, 0, sizeof *out); int i = six_index(h);
+    int ok = i >= 0 && atomic_load(&g_six_started[i]) && dm_motion_read &&
+             dm_motion_read(out, atomic_load(&g_six_fusion[i]));
+    static _Atomic unsigned reported;
+    if (ok && !(atomic_load(&reported) & (1u << i)) && !(atomic_fetch_or(&reported, 1u << i) & (1u << i)))
+        LOG("Phone motion reached the game (%s sensor)", i ? "handheld" : "full-key");
+    return ok;
+}
 HLE_FORCE("_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "六轴句柄",
-          int, h_hid_SixHandles, uint32_t *h, int n, const uint32_t *id, uint32_t style) { (void)style; int k = n < 2 ? n : 2; for (int i = 0; i < k; i++) h[i] = (*id << 8) | (uint32_t)i; return k; }
-HLE_FORCE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", "六轴；宿主不提供", void, h_hid_SixStart, const uint32_t *h) { (void)h; }
-HLE_FORCE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", "六轴状态；宿主不提供（0 条）",
-          int, h_hid_SixStates, void *out, int n, const uint32_t *h) { (void)out; (void)n; (void)h; return 0; }
-// Vibration: no devices
-HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "震动许可；宿主不支持", unsigned, h_hid_VibPermit, void) { return 0; }
-HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "震动设备：0 个",
-          int, h_hid_VibHandles, void *h, int n, const uint32_t *id, uint32_t style) { (void)h; (void)n; (void)id; (void)style; return 0; }
-HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "震动；宿主不支持", void, h_hid_InitVib, const void *h) { (void)h; }
-HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "震动；宿主不支持", void, h_hid_SendVib, const void *h, const void *v) { (void)h; (void)v; }
+          int, h_hid_SixHandles, uint32_t *h, int n, const uint32_t *id, uint32_t style) {
+    if (n <= 0 || !(style_of(*id) & style)) return 0;
+    h[0] = six_handle(*id); return 1;
+}
+HLE_FORCE("_ZN2nn3hid18StartSixAxisSensorERKNS0_19SixAxisSensorHandleE", "启动六轴", void, h_hid_SixStart, const uint32_t *h) {
+    int i = six_index(h); if (i >= 0) atomic_store(&g_six_started[i], 1);
+}
+HLE_FORCE("_ZN2nn3hid22GetSixAxisSensorStatesEPNS0_18SixAxisSensorStateEiRKNS0_19SixAxisSensorHandleE", "六轴状态",
+          int, h_hid_SixStates, dm_sixaxis_state *out, int n, const uint32_t *h) { return n > 0 ? six_state(out, h) : 0; }
+// Vibration handles use the SDK's style/player/device bytes, as do six-axis
+// handles. Advertise the virtual controller's two sides at startup when the
+// frontend supports rumble, so connecting a physical controller later works.
+// ABI and detail-service interception reference: MacNativeGames hid_feedback.c
+// (MIT; dm/third_party/macnativegames/LICENSE).
+void (*dm_vibration_send)(unsigned side, const dm_vibration_value *value);
+void (*dm_vibration_shutdown)(void);
+static pthread_mutex_t g_vib_mu = PTHREAD_MUTEX_INITIALIZER;
+static dm_vibration_value g_vib_last[2] = {{0,160,0,320}, {0,160,0,320}};
+static uint32_t vib_handle(uint32_t id, unsigned side) {
+    return side << 16 | (id == NPAD_HANDHELD ? 8u << 8 | 4u : 3u);
+}
+static int vib_side(const uint32_t *h) {
+    if (!dm_vibration_send || !h) return -1;
+    for (unsigned s = 0; s < 2; s++) if (*h == vib_handle(connected_id(), s)) return (int)s;
+    return -1;
+}
+static void vib_send(const uint32_t *h, const dm_vibration_value *value) {
+    int side = vib_side(h); if (side < 0 || !value) return;
+    dm_vibration_value v = *value;
+    if (!isfinite(v.amplitude_low) || !isfinite(v.amplitude_high) ||
+        !isfinite(v.frequency_low) || !isfinite(v.frequency_high)) v = (dm_vibration_value){0,160,0,320};
+    v.amplitude_low = fmaxf(0, fminf(1, v.amplitude_low));
+    v.amplitude_high = fmaxf(0, fminf(1, v.amplitude_high));
+    v.frequency_low = fmaxf(0, fminf(1250, v.frequency_low));
+    v.frequency_high = fmaxf(0, fminf(1250, v.frequency_high));
+    // Serialize the snapshot and publication together: simultaneous SDK callers
+    // must not leave GetActualVibrationValue and the output sink in opposite orders.
+    pthread_mutex_lock(&g_vib_mu); g_vib_last[side] = v;
+    dm_vibration_send((unsigned)side, &v); // frontend callback only publishes; no hardware work here
+    pthread_mutex_unlock(&g_vib_mu);
+    static _Atomic int first;
+    if (!atomic_exchange(&first, 1)) LOG("Game vibration reached the host (side %d)", side);
+}
+static void vib_actual(dm_vibration_value *v, const uint32_t *h) {
+    memset(v, 0, sizeof *v); int side = vib_side(h); if (side < 0) return;
+    pthread_mutex_lock(&g_vib_mu); *v = g_vib_last[side]; pthread_mutex_unlock(&g_vib_mu);
+}
+static void vib_info(uint32_t *info, const uint32_t *h) {
+    int side = vib_side(h); info[0] = side < 0 ? 0 : 1; info[1] = side < 0 ? 0 : (uint32_t)side + 1;
+}
+HLE_FORCE("_ZN2nn3hid20IsVibrationPermittedEv", "震动许可：前端支持时允许", unsigned, h_hid_VibPermit, void) { return dm_vibration_send != NULL; }
+HLE_FORCE("_ZN2nn3hid25GetVibrationDeviceHandlesEPNS0_21VibrationDeviceHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "前端震动设备句柄",
+          int, h_hid_VibHandles, uint32_t *h, int n, const uint32_t *id, uint32_t style) {
+    if (!dm_vibration_send || n <= 0 || !h || !id || !(style_of(*id) & style)) return 0;
+    int count = n < 2 ? n : 2; for (int i = 0; i < count; i++) h[i] = vib_handle(*id, (unsigned)i); return count;
+}
+HLE_FORCE("_ZN2nn3hid25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "初始化前端震动设备", void, h_hid_InitVib, const uint32_t *h) { (void)h; }
+HLE_FORCE("_ZN2nn3hid18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "前端震动输出", void, h_hid_SendVib, const uint32_t *h, const dm_vibration_value *v) { vib_send(h,v); }
 // Values queued by the vibration graph (VibrationNode::Update) reach it from the sdk's internal FlushEnqueuedVibrationValues through the PLT, into the hid service proxy (sm abort). Metroid Dread
 // sets handles on its VibrationTargets even when the host reports 0 devices, so values get queued; return success and the flush clears its count as usual
-HLE_FORCE("_ZN2nn3hid6detail19SendVibrationValuesEPKNS0_21VibrationDeviceHandleEPKNS0_14VibrationValueEi", "震动（批量，震动图 flush 用）；宿主不支持", Result, h_hid_SendVibs, const void *h, const void *v, int n) { (void)h; (void)v; (void)n; return 0; }
+HLE_FORCE("_ZN2nn3hid6detail19SendVibrationValuesEPKNS0_21VibrationDeviceHandleEPKNS0_14VibrationValueEi", "前端批量震动输出（震动图 flush）", Result, h_hid_SendVibs, const uint32_t *h, const dm_vibration_value *v, int n) {
+    if (dm_vibration_send && h && v) for (int i = 0; i < n; i++) vib_send(&h[i], &v[i]);
+    return RES_OK;
+}
+// The SDK also calls these service proxies through its own PLT. Intercept them
+// with their Result + output-pointer ABI, rather than entering the hid service.
+HLE_FORCE("_ZN2nn3hid6detail25InitializeVibrationDeviceERKNS0_21VibrationDeviceHandleE", "前端震动设备初始化代理", Result, h_hid_VibInitDetail, const uint32_t *h) { h_hid_InitVib(h); return RES_OK; }
+HLE_FORCE("_ZN2nn3hid6detail18SendVibrationValueERKNS0_21VibrationDeviceHandleERKNS0_14VibrationValueE", "前端震动输出代理", Result, h_hid_VibSendDetail, const uint32_t *h, const dm_vibration_value *v) { vib_send(h,v); return RES_OK; }
+HLE_FORCE("_ZN2nn3hid6detail23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21VibrationDeviceHandleE", "实际震动值代理", Result, h_hid_VibActualDetail, dm_vibration_value *v, const uint32_t *h) { vib_actual(v,h); return RES_OK; }
+HLE_FORCE("_ZN2nn3hid6detail22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", "震动设备信息代理", Result, h_hid_VibInfoDetail, uint32_t *info, const uint32_t *h) { vib_info(info,h); return RES_OK; }
+HLE_FORCE("_ZN2nn3hid6detail24IsVibrationDeviceMountedEPbRKNS0_21VibrationDeviceHandleE", "震动设备连接状态代理", Result, h_hid_VibMountedDetail, uint8_t *mounted, const uint32_t *h) { *mounted = vib_side(h) >= 0; return RES_OK; }
+HLE_FORCE("_ZN2nn3hid6detail20IsVibrationPermittedEPb", "震动许可代理", Result, h_hid_VibPermitDetail, uint8_t *permitted) { *permitted = dm_vibration_send != NULL; return RES_OK; }
 // Mouse / keyboard: not connected
 HLE_FORCE("_ZN2nn3hid15InitializeMouseEv", "鼠标；宿主不提供", void, h_hid_InitMouse, void) {}
 HLE_FORCE("_ZN2nn3hid14GetMouseStatesEPNS0_10MouseStateEi", "鼠标状态：0 条", int, h_hid_MouseStates, void *out, int n) { (void)out; (void)n; return 0; }
@@ -192,10 +286,16 @@ TOUCH(1) TOUCH(2) TOUCH(3) TOUCH(4) TOUCH(5) TOUCH(6) TOUCH(7) TOUCH(8) TOUCH(9)
 HLE_FORCE("_ZN2nn3hid17InitializeGestureEv", "手势；宿主不提供", void, h_hid_InitGesture, void) {}
 HLE_FORCE("_ZN2nn3hid16GetGestureStatesEPNS0_12GestureStateEi", "手势状态：0 条", int, h_hid_Gestures, void *out, int n) { (void)out; (void)n; return 0; }
 
-// Six-axis details: at rest, fusion off; SixAxisSensorState 0x60 bytes zeroed (attributes = 0: not connected)
-HLE_FORCE("_ZN2nn3hid17StopSixAxisSensorERKNS0_19SixAxisSensorHandleE", "六轴；宿主不提供", void, h_hid_SixStop, const uint32_t *h) { (void)h; }
-HLE_FORCE("_ZN2nn3hid21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE", "六轴当前状态：未连接", void, h_hid_SixState, void *s, const uint32_t *h) { (void)h; memset(s, 0, 0x60); }
-HLE_FORCE("_ZN2nn3hid21IsSixAxisSensorAtRestERKNS0_19SixAxisSensorHandleE", "六轴静止：是", unsigned, h_hid_SixRest, const uint32_t *h) { (void)h; return 1; }
+HLE_FORCE("_ZN2nn3hid17StopSixAxisSensorERKNS0_19SixAxisSensorHandleE", "停止六轴", void, h_hid_SixStop, const uint32_t *h) {
+    int i = six_index(h); if (i >= 0) atomic_store(&g_six_started[i], 0);
+}
+HLE_FORCE("_ZN2nn3hid21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE", "六轴当前状态", void, h_hid_SixState, dm_sixaxis_state *s, const uint32_t *h) { six_state(s, h); }
+HLE_FORCE("_ZN2nn3hid21IsSixAxisSensorAtRestERKNS0_19SixAxisSensorHandleE", "六轴静止查询", unsigned, h_hid_SixRest, const uint32_t *h) {
+    dm_sixaxis_state s; if (!six_state(&s, h)) return 1;
+    float rate2 = 0, accel2 = 0;
+    for (int i = 0; i < 3; i++) { rate2 += s.angular_velocity[i]*s.angular_velocity[i]; accel2 += s.acceleration[i]*s.acceleration[i]; }
+    return rate2 < 0.00000772f && accel2 > 0.9f*0.9f && accel2 < 1.1f*1.1f; // 1 degree/s
+}
 // The console's own six-axis sensor (SevenSixAxisSensor, the body's orientation in handheld mode; The Legend of Zelda: Breath of the Wild): takes a work buffer and is switched through the hid service. The host provides none: switching succeeds, 0 states
 HLE_FORCE("_ZN2nn3hid28InitializeSevenSixAxisSensorEPvm", "机身六轴初始化；宿主不提供", Result, h_hid_SevenInit, void *buf, size_t n) { (void)buf; (void)n; return RES_OK; }
 HLE_FORCE("_ZN2nn3hid26FinalizeSevenSixAxisSensorEv", "机身六轴", Result, h_hid_SevenFini, void) { return RES_OK; }
@@ -203,14 +303,20 @@ HLE_FORCE("_ZN2nn3hid23StartSevenSixAxisSensorEv", "机身六轴；宿主不提�
 HLE_FORCE("_ZN2nn3hid22StopSevenSixAxisSensorEv", "机身六轴", Result, h_hid_SevenStop, void) { return RES_OK; }
 HLE_FORCE("_ZN2nn3hid32ResetSevenSixAxisSensorTimestampEv", "机身六轴时间戳", void, h_hid_SevenReset, void) {}
 HLE_FORCE("_ZN2nn3hid27GetSevenSixAxisSensorStatesEPNS0_23SevenSixAxisSensorStateEi", "机身六轴状态：0 条", int, h_hid_SevenStates, void *out, int n) { (void)out; (void)n; return 0; }
-HLE_FORCE("_ZN2nn3hid25EnableSixAxisSensorFusionERKNS0_19SixAxisSensorHandleEb", "六轴融合；宿主忽略", void, h_hid_SixFusionOn, const uint32_t *h, uint32_t on) { (void)h; (void)on; }
-HLE_FORCE("_ZN2nn3hid28IsSixAxisSensorFusionEnabledERKNS0_19SixAxisSensorHandleE", "六轴融合：未开", unsigned, h_hid_SixFusionQ, const uint32_t *h) { (void)h; return 0; }
-HLE_FORCE("_ZN2nn3hid25GetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleE", "陀螺零漂模式：标准", int, h_hid_GyroGet, const uint32_t *h) { (void)h; return 1; }
-HLE_FORCE("_ZN2nn3hid25SetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleERKNS0_22GyroscopeZeroDriftModeE", "陀螺零漂模式；宿主忽略", void, h_hid_GyroSet, const uint32_t *h, const int *m) { (void)h; (void)m; }
-HLE_FORCE("_ZN2nn3hid32GetSixAxisSensorFusionParametersEPfS1_RKNS0_19SixAxisSensorHandleE", "六轴融合参数：0", void, h_hid_FusionGet, float *a, float *b, const uint32_t *h) { (void)h; *a = 0; *b = 0; }
-HLE_FORCE("_ZN2nn3hid32SetSixAxisSensorFusionParametersERKNS0_19SixAxisSensorHandleEff", "六轴融合参数；宿主忽略", void, h_hid_FusionSet, const uint32_t *h, float a, float b) { (void)h; (void)a; (void)b; }
-HLE_FORCE("_ZN2nn3hid34ResetSixAxisSensorFusionParametersERKNS0_19SixAxisSensorHandleE", "六轴融合参数；宿主忽略", void, h_hid_FusionReset, const uint32_t *h) { (void)h; }
+HLE_FORCE("_ZN2nn3hid26IsSevenSixAxisSensorAtRestEv", "机身六轴静止：是（超级马力欧 奥德赛）", unsigned, h_hid_SevenRest, void) { return 1; }
+// The development debug pad (Super Mario Odyssey initializes and polls it): never connected, all zero
+HLE_FORCE("_ZN2nn3hid18InitializeDebugPadEv", "调试手柄；宿主没有", void, h_hid_DbgPadInit, void) {}
+HLE_FORCE("_ZN2nn3hid16GetDebugPadStateEPNS0_13DebugPadStateE", "调试手柄状态：未连接（全 0）", void, h_hid_DbgPadState, void *st) { memset(st, 0, 32); }   // sampling number, attributes, buttons, two sticks
+// Preserve the game's per-handle settings. Fusion selects the gravity-corrected
+// orientation; zero-drift bias is measured by explicit phone calibration.
+HLE_FORCE("_ZN2nn3hid25EnableSixAxisSensorFusionERKNS0_19SixAxisSensorHandleEb", "六轴融合开关", void, h_hid_SixFusionOn, const uint32_t *h, uint32_t on) { int i = six_index(h); if (i >= 0) atomic_store(&g_six_fusion[i], !!on); }
+HLE_FORCE("_ZN2nn3hid28IsSixAxisSensorFusionEnabledERKNS0_19SixAxisSensorHandleE", "六轴融合查询", unsigned, h_hid_SixFusionQ, const uint32_t *h) { int i = six_index(h); return i >= 0 && atomic_load(&g_six_fusion[i]); }
+HLE_FORCE("_ZN2nn3hid25GetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleE", "陀螺零漂模式", int, h_hid_GyroGet, const uint32_t *h) { int i = six_index(h); return i >= 0 ? atomic_load(&g_six_drift[i]) : 1; }
+HLE_FORCE("_ZN2nn3hid25SetGyroscopeZeroDriftModeERKNS0_19SixAxisSensorHandleERKNS0_22GyroscopeZeroDriftModeE", "陀螺零漂模式", void, h_hid_GyroSet, const uint32_t *h, const int *m) { int i = six_index(h); if (i >= 0) atomic_store(&g_six_drift[i], *m); }
+HLE_FORCE("_ZN2nn3hid32GetSixAxisSensorFusionParametersEPfS1_RKNS0_19SixAxisSensorHandleE", "六轴融合参数", void, h_hid_FusionGet, float *a, float *b, const uint32_t *h) { int i = six_index(h); *a = i >= 0 ? g_six_params[i][0] : 0; *b = i >= 0 ? g_six_params[i][1] : 0; }
+HLE_FORCE("_ZN2nn3hid32SetSixAxisSensorFusionParametersERKNS0_19SixAxisSensorHandleEff", "六轴融合参数", void, h_hid_FusionSet, const uint32_t *h, float a, float b) { int i = six_index(h); if (i >= 0) { g_six_params[i][0] = a; g_six_params[i][1] = b; } }
+HLE_FORCE("_ZN2nn3hid34ResetSixAxisSensorFusionParametersERKNS0_19SixAxisSensorHandleE", "六轴融合参数重置", void, h_hid_FusionReset, const uint32_t *h) { int i = six_index(h); if (i >= 0) { g_six_params[i][0] = 0.03f; g_six_params[i][1] = 0.4f; } }
 HLE_FORCE("_ZN2nn3hid41IsFirmwareUpdateAvailableForSixAxisSensorERKNS0_19SixAxisSensorHandleE", "六轴固件更新：无", unsigned, h_hid_SixFw, const uint32_t *h) { (void)h; return 0; }
-// Vibration device info / actual value: no device, zeroed
-HLE_FORCE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", "震动设备信息：无", void, h_hid_VibInfo, uint32_t *info, const void *h) { (void)h; info[0] = 0; info[1] = 0; }
-HLE_FORCE("_ZN2nn3hid23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21VibrationDeviceHandleE", "实际震动值：0", void, h_hid_VibActual, float *v, const void *h) { (void)h; memset(v, 0, 16); }
+HLE_FORCE("_ZN2nn3hid22GetVibrationDeviceInfoEPNS0_19VibrationDeviceInfoERKNS0_21VibrationDeviceHandleE", "前端震动设备信息", void, h_hid_VibInfo, uint32_t *info, const uint32_t *h) { vib_info(info,h); }
+HLE_FORCE("_ZN2nn3hid23GetActualVibrationValueEPNS0_14VibrationValueERKNS0_21VibrationDeviceHandleE", "前端最后接受的震动值", void, h_hid_VibActual, dm_vibration_value *v, const uint32_t *h) { vib_actual(v,h); }
+HLE_FORCE("_ZN2nn3hid24IsVibrationDeviceMountedERKNS0_21VibrationDeviceHandleE", "前端震动设备连接状态", unsigned, h_hid_VibMounted, const uint32_t *h) { return vib_side(h) >= 0; }

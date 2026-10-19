@@ -11,4 +11,4 @@ int nvn_deswz_gpu_encode(id<MTLComputeCommandEncoder> enc, id<MTLBuffer> src, ui
 int nvn_deswz_gpu_encode_m4(id<MTL4ComputeCommandEncoder> enc, id<MTL4ArgumentTable> table,
                             id<MTLBuffer> params, size_t params_off, id<MTLBuffer> src, uint64_t src_off,
                             const nvn_texdesc *d, unsigned level, unsigned layer,
-                            id<MTLBuffer> dst, uint64_t dst_off, size_t dst_pitch);
+                            id<MTLBuffer> dst, uint64_t dst_off, size_t dst_pitch) API_AVAILABLE(ios(26.0), macos(26.0));

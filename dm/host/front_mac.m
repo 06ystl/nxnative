@@ -8,6 +8,7 @@
 #include "dm_input.h"
 #include "gamepad_mac.h"
 #include "input_focus_mac.h"
+#include "motion_mac.h"
 #include "dm_uiscreen.h"
 void mtl_set_ui_rect_fn(void (*fn)(double *y, double *h));
 static void ui_rect_frac(double *fy, double *fh) { int x, y, w, h, rw = 0, rh = 0; dm_ui_rect(&x, &y, &w, &h); if (dm_screen_real(&rw, &rh) && rh > 0) { *fy = (double)y / rh; *fh = (double)h / rh; } }   // Same as front_ios.m: vertical position and height of the UI rectangle (as fractions of the frame height)
@@ -39,6 +40,7 @@ static void push(void) {
 static void input_active(int active) {
     if (!active) { g_btn = 0; g_w = g_a = g_s = g_d = 0; push(); dm_touch_set(NULL, 0); }
     dm_gamepad_mac_set_active(active);
+    dm_motion_mac_set_active(active);
     dm_focus_set(active ? 1 : g_window.miniaturized ? 3 : 2);
 }
 static int key_bit(unsigned short code) {
@@ -121,6 +123,7 @@ void front_run(void (*guest)(void)) {
         [nc addObserverForName:NSWindowDidMiniaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_focus_set(3); dm_audio_suspend(1); dm_gfx_suspend(1); }];
         [nc addObserverForName:NSWindowDidDeminiaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(2); }];
         dm_gamepad_mac_start();
+        dm_motion_mac_start();
         static id inputFocus;
         inputFocus = dm_mac_input_watch(NSApp, win, input_active);
         // Guest thread: 64 MiB stack (the Switch main thread stack is specified by npdm; the host gives plenty)

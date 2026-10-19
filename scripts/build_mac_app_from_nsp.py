@@ -112,13 +112,14 @@ def main(args=None):
     if not re.fullmatch(r'[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+', bundle_id):
         raise nsp.BuildError('Use a reverse-DNS bundle ID (letters, digits, hyphens and dots).')
     patched = work / f'patched_{pkg}'
+    env['MAIN'] = str(game / 'ExeFS/main')
     nsp.rewrite(sys.executable, repo, game / 'ExeFS', patched, env, logs, g)
+    if g.get('shader_glslc_capture', 'off') == 'on':
+        nsp.capture_glslc(repo, {v: dirs[v] for v in need}, pkg, patched, work, env, logs, g)
     sh = work / 'shader'
     nsp.split_shaders(sys.executable, repo, [dirs[v] / 'RomFS' for v in need],
                       [dirs[v] / 'ExeFS/main' for v in need], sh / 'pkg', env, logs, g)
-    nsp.say('Building macOS shader libraries (cached libraries are reused)')
-    nsp.run([sys.executable, repo / 'dm/gfx/tools/dmsh_build.py', sh / 'pkg', sh / 'cache'],
-            logs / 'dmsh_build.log', env=dict(env, XLATE=str(xlate)), quiet=True)
+    nsp.build_shaders(sys.executable, repo, sh, xlate, env, logs, g, with_ios=False)
     icon = next((d / 'icon.jpg' for d in (game, base) if (d / 'icon.jpg').is_file()), None)
     if not icon: nsp.say('【红】No extracted game icon; the app will use the generic icon. Re-extract to restore it.')
     nsp.say('Packaging the Mac app (game files, macOS shaders, fonts and local signature)')

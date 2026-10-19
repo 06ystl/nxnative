@@ -1,0 +1,52 @@
+name: MotionSourceNX
+options:
+  deploymentTarget:
+    iOS: '17.0'
+targets:
+  MotionSourceNX:
+    type: application
+    platform: iOS
+    sources:
+      - path: source/MotionSourceiOS
+        excludes: [Info.plist]
+      - path: socket/Source/GCD/GCDAsyncUdpSocket.m
+      - path: socket/Source/GCD/GCDAsyncUdpSocket.h
+    dependencies:
+      - sdk: CoreMotion.framework
+      - sdk: CFNetwork.framework
+      - sdk: QuartzCore.framework
+      - sdk: Network.framework
+      - sdk: libz.tbd
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.nxnative.motionsource
+      PRODUCT_NAME: MotionSourceNX
+      MARKETING_VERSION: '1.1.3'
+      CURRENT_PROJECT_VERSION: '3'
+      INFOPLIST_FILE: Info.plist
+      CODE_SIGNING_ALLOWED: NO
+      CODE_SIGNING_REQUIRED: NO
+      CLANG_ENABLE_OBJC_ARC: YES
+      GCC_C_LANGUAGE_STANDARD: gnu11
+      HEADER_SEARCH_PATHS: '$(inherited) $(SRCROOT)/include'
+      TARGETED_DEVICE_FAMILY: '1,2'
+      ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+      SUPPORTS_MACCATALYST: YES
+  MotionSourceNXTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [tests]
+    dependencies:
+      - target: MotionSourceNX
+    settings:
+      PRODUCT_BUNDLE_IDENTIFIER: org.nxnative.motionsource.tests
+      GENERATE_INFOPLIST_FILE: YES
+      HEADER_SEARCH_PATHS: '$(inherited) $(SRCROOT)/source/MotionSourceiOS $(SRCROOT)/include'
+      CODE_SIGNING_ALLOWED: NO
+      SUPPORTS_MACCATALYST: YES
+schemes:
+  MotionSourceNX:
+    build:
+      targets:
+        MotionSourceNX: all
+    test:
+      targets: [MotionSourceNXTests]

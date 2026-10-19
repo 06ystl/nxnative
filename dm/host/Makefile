@@ -6,14 +6,20 @@ ifneq ($(filter-out clean,$(MAKECMDGOALS)),)
 $(error 没设 GAME | GAME is not set: make GAME=<基础版标题号 | base game title ID>: $(shell python3 ../games/game.py list | awk -F'\t' '{printf "%s (%s)  ", $$1, $$3}'))
 endif
 endif
-GAME_DIR = ../games/$(GAME)
+# A profile outside the repository (DM_GAMES_DIR, e.g. the NSP script's provisional profile) is reached through the symlink gen/<id>/profile: make cannot take paths with spaces
+ifneq ($(strip $(GAME)),)
+GAME_DIR := $(if $(wildcard ../games/$(GAME)/game.tsv),../games/$(GAME),$(shell python3 ../games/game.py link $(GAME) gen/$(GAME)/profile >&2 && echo gen/$(GAME)/profile))
+ifeq ($(GAME_DIR),)
+$(error 没有游戏档案 $(GAME)（dm/games 与 DM_GAMES_DIR 里都没有）| no game profile $(GAME) (neither in dm/games nor in DM_GAMES_DIR))
+endif
+endif
 GAME_H = gen/$(GAME)/game_profile.h
 CFLAGS=-O1 -g -Wall -Wno-unused-function
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
-SRC=main.c loader.c hle.c host_stubs.c crash.c probe.c thread.c memstat.m ../ios/Sources/dm_touch_controls.c $(sort $(wildcard hle_*.c)) front_mac.m gamepad_mac.m input_focus_mac.m resolution_mac.c entry.S dm_i18n.c
-# NVN null device + nn::vi (dm/gfx/)
-# Sources under dm/gfx and dm/gfx/nvn are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line
-GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m ../gfx/nvn/*.S ../gfx/tex/*.c ../gfx/tex/*.m))
+SRC=main.c loader.c hle.c host_stubs.c crash.c probe.c thread.c memstat.m ../ios/Sources/dm_touch_controls.c $(sort $(wildcard hle_*.c)) front_mac.m gamepad_mac.m rumble_mac.m input_focus_mac.m motion_mac.m motion_dsu_mac.c resolution_mac.c entry.S dm_i18n.c
+# NVN null device + nn::vi + the Vulkan layer (dm/gfx/)
+# Sources under dm/gfx, dm/gfx/nvn, dm/gfx/tex and dm/gfx/vk are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line
+GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m ../gfx/nvn/*.S ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m))
 GFX_H=$(sort $(wildcard ../gfx/nvn/*.h ../gfx/nvn/include/*.h ../gfx/tex/*.h))
 # Third party: only the decompression-related sources of libdeflate are built (TACT BLTE zlib blocks, hle_tact.c)
 LIBDEFLATE=../third_party/libdeflate/lib/deflate_decompress.c ../third_party/libdeflate/lib/zlib_decompress.c ../third_party/libdeflate/lib/adler32.c ../third_party/libdeflate/lib/utils.c ../third_party/libdeflate/lib/arm/cpu_features.c
@@ -51,8 +57,8 @@ $(GAME_STAMP): FORCE
 	@mkdir -p gen; echo $(GAME) | cmp -s - $@ || echo $(GAME) > $@
 .PHONY: FORCE
 FORCE:
-dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h dm_padmap.h gamepad_mac.h input_focus_mac.h resolution_mac.h front.h touch_mac.h ../ios/Sources/dm_touch_controls.[ch] $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_LIB)
-	clang $(CFLAGS) -I../gfx/nvn/include -I$(dir $(GAME_H)) -I$(GAME_DIR) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework GameController -framework AudioToolbox -framework ImageIO -framework UniformTypeIdentifiers
+dmhost: $(SRC) $(GFX) dm.h hle.h dm_input.h dm_padmap.h gamepad_mac.h rumble_mac.h input_focus_mac.h motion_mac.h motion_dsu_mac.h resolution_mac.h front.h touch_mac.h ../ios/Sources/dm_touch_controls.[ch] $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_LIB)
+	clang $(CFLAGS) -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(GAME_DIR) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework GameController -framework CoreHaptics -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
 
 # Finder-launchable Mac host. Keep dmhost's command-line and diagnostic defaults intact.
 # The packager raises MACOS_MIN when a cached shader library targets a newer OS.
@@ -65,5 +71,5 @@ gen/vpx_macos/%.o: $(VPX)/%.c $(wildcard $(VPX)/config/*.h)
 	clang -O2 -g -arch arm64 -mmacosx-version-min=26.0 -I$(VPX) -I$(VPX)/config -c $< -o $@
 $(VPX_APP_LIB): $(VPX_APP_OBJ)
 	rm -f $@; ar rcs $@ $^
-dmhost_app: $(SRC) ../macos/app_mac.m dm.h hle.h dm_input.h dm_padmap.h gamepad_mac.h input_focus_mac.h resolution_mac.h front.h touch_mac.h ../ios/Sources/dm_touch_controls.[ch] $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_APP_LIB) Makefile FORCE
-	clang $(MACOS_APP_CFLAGS) -arch arm64 -mcpu=apple-m1 -mmacosx-version-min=$(MACOS_MIN) -DDM_MAC_APP -I../gfx/nvn/include -I$(dir $(GAME_H)) -I$(GAME_DIR) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) ../macos/app_mac.m $(GFX) $(VPX_APP_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework GameController -framework AudioToolbox -framework ImageIO -framework UniformTypeIdentifiers
+dmhost_app: $(SRC) ../macos/app_mac.m dm.h hle.h dm_input.h dm_padmap.h gamepad_mac.h rumble_mac.h input_focus_mac.h motion_mac.h motion_dsu_mac.h resolution_mac.h front.h touch_mac.h ../ios/Sources/dm_touch_controls.[ch] $(GFX_H) $(GAME_H) $(GAME_DIR)/dmsh_chain.h $(GAME_STAMP) $(VPX_APP_LIB) Makefile FORCE
+	clang $(MACOS_APP_CFLAGS) -arch arm64 -mcpu=apple-m1 -mmacosx-version-min=$(MACOS_MIN) -DDM_MAC_APP -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(GAME_DIR) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) ../macos/app_mac.m $(GFX) $(VPX_APP_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework GameController -framework CoreHaptics -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers

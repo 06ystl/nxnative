@@ -128,7 +128,7 @@ static int uniform_batch_prepare(const uint8_t *start, uint64_t dst, uint64_t le
     // Every update replaces exactly the same byte range. All other bytes
     // come from the original buffer, so versions do not depend on one
     // another. Their destination and patch ranges are disjoint allocations.
-    id<MTL4ComputeCommandEncoder> encoder = blit();
+    id encoder = blit();
     for (int i = 0; i < count; i++) {
         __typeof__(g_uniform_batch.version[0]) *v = &g_uniform_batch.version[i];
         enc_b_copy_buffer(encoder, g_uniform_batch.original, offset, v->buffer, v->offset, size);

@@ -127,7 +127,10 @@ def main(args=None):
     icon = next((d / 'icon.jpg' for d in (game, base) if (d / 'icon.jpg').is_file()), None)
     if not icon: nsp.say('【红】No extracted game icon; the apps will use a generic icon. Re-extract to restore it.')
     patched = work / f'patched_{pkg}'
+    env['MAIN'] = str(game / 'ExeFS/main')
     nsp.rewrite(sys.executable, repo, game / 'ExeFS', patched, env, logs, g)
+    if g.get('shader_glslc_capture', 'off') == 'on':
+        nsp.capture_glslc(repo, {v: dirs[v] for v in need}, pkg, patched, work, env, logs, g)
     sh = work / 'shader'
     nsp.split_shaders(sys.executable, repo, [dirs[v] / 'RomFS' for v in need],
                       [dirs[v] / 'ExeFS/main' for v in need], sh / 'pkg', env, logs, g)
@@ -136,9 +139,7 @@ def main(args=None):
         # One dmsh_build invocation produces the Mac cache and, via IOSOUT, iOS libraries.
         ios = nsp.build_shaders(sys.executable, repo, sh, xlate, env, logs, g)
     else:
-        nsp.say('Building macOS shader libraries (cached libraries are reused)')
-        nsp.run([sys.executable, repo / 'dm/gfx/tools/dmsh_build.py', sh / 'pkg', sh / 'cache'],
-                logs / 'dmsh_build.log', env=dict(env, XLATE=str(xlate)), quiet=True)
+        nsp.build_shaders(sys.executable, repo, sh, xlate, env, logs, g, with_ios=False)
     completed, failures = [], []
     for target in targets:
         out = outputs[target]

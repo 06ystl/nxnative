@@ -14,7 +14,7 @@ static id<MTLRenderPipelineState> pipeline;
 static id<MTLDepthStencilState> ds;
 static int checks,failed;
 #define EXPECT(label, expected, actual) do{uint64_t a=(actual),e=(expected);checks++;if(a!=e){failed++;printf("FAIL %s: expected %llu, got %llu\n",label,e,a);}}while(0)
-static void settings(id<MTL4RenderCommandEncoder> e,int k){
+static void settings(id e,int k){
     MTLViewport vp={0,0,k==5?4:8,k==5?4:8,0,1};
     MTLScissorRect sc=k==1?(MTLScissorRect){4,0,4,4}:k>=2&&k<=4?(MTLScissorRect){0,4,8,4}:(MTLScissorRect){0,0,4,4};
     enc_r_viewport(e,vp);enc_r_scissor(e,sc);
@@ -38,14 +38,14 @@ static void read_planes(id<MTLBuffer> __strong out[3]){
 static void render(int cache,id<MTLBuffer> __strong out[2][3]){
     g_test_render_state_cache=cache;mtl_sub_begin();
     for(int pass=0;pass<2;pass++){
-        MTL4RenderPassDescriptor *rp=[MTL4RenderPassDescriptor new];
+        MTLRenderPassDescriptor *rp=backend_render_pass();
         rp.colorAttachments[0].texture=color;rp.colorAttachments[0].loadAction=MTLLoadActionClear;
         rp.colorAttachments[0].storeAction=MTLStoreActionStore;rp.colorAttachments[0].clearColor=MTLClearColorMake(0,0,0,1);
         rp.depthAttachment.texture=rp.stencilAttachment.texture=depth;
         rp.depthAttachment.loadAction=rp.stencilAttachment.loadAction=MTLLoadActionClear;
         rp.depthAttachment.storeAction=rp.stencilAttachment.storeAction=MTLStoreActionStore;
         rp.depthAttachment.clearDepth=.75;rp.stencilAttachment.clearStencil=0;
-        id<MTL4RenderCommandEncoder> e=enc_r_begin(rp);enc_r_pso(e,pipeline);enc_r_dss(e,ds);
+        id e=enc_r_begin(rp);enc_r_pso(e,pipeline);enc_r_dss(e,ds);
         for(int k=pass?5:0;k<6;k++){
             settings(e,k);enc_r_draw(e,MTLPrimitiveTypeTriangle,0,3);
             settings(e,k);enc_r_draw(e,MTLPrimitiveTypeTriangle,0,3);

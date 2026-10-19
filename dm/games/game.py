@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 # Game profiles: dm/games/<base game title ID>/game.tsv (key <TAB> values..., lines starting with # are comments) + the shader tables and dmsh_chain.h in the same folder. The shader tools, the host build, iOS packaging and the NSP script take each game's constants from here.
-# Usage: game.py list (list all profiles); game.py <id> <key> (print that key's value, for shell); game.py header <id> <out.h> (generate the host's game_profile.h)
+# Usage: game.py list (list all profiles); game.py <id> <key> (print that key's value, for shell); game.py header <id> <out.h> (generate the host's game_profile.h);
+#   game.py dir <id> (print the profile folder); game.py link <id> <link> (point a symlink at the profile folder: make cannot take paths with spaces)
 #   From Python: import game; g = game.load() (takes DM_GAME; there is no default game: unset is an error that lists the profiles); game.by_title(title ID); g.get / g.words / g.int / g.builds() / g.table(file name)
+# DM_GAMES_DIR (folders separated by ':') adds profile folders outside the repository, searched after dm/games: the NSP script writes a provisional profile for a game without one into
+#   <NSP folder>/<id>_build/profile/<id>/ and points DM_GAMES_DIR at <id>_build/profile, so the shader tools, the host build and build_ipa.sh all find it
 import os, re, sys
 from pathlib import Path
 
@@ -43,12 +46,21 @@ class Game:
         return [tuple(w.split('=', 1)) for w in self.words(key)]
 
 
+def extra_dirs():   # profile folders outside the repository (DM_GAMES_DIR), searched after dm/games
+    return [Path(p) for p in os.environ.get('DM_GAMES_DIR', '').split(':') if p]
+
+
+def find_dir(name):   # the profile folder of a title ID (dm/games first, then DM_GAMES_DIR); a path is taken as is
+    if os.sep in str(name): return Path(name)
+    return next((d / name for d in [HERE] + extra_dirs() if (d / name / 'game.tsv').exists()), HERE / name)
+
+
 def load(name=None):
     name = name or os.environ.get('DM_GAME')
     if not name:   # there is no default game
         have = ', '.join(f'{g.id} ({g.get("name", "")})' for g in all_games())
         raise SystemExit(f'【红】没设 DM_GAME：用基础版标题号选游戏档案：{have} | DM_GAME is not set: pick a game profile by base game title ID: {have}')
-    d = Path(name) if os.sep in str(name) else HERE / name
+    d = find_dir(name)
     if not (d / 'game.tsv').exists():   # profile folders are named after the base game's title ID (the old names smbw / fe_engage are gone)
         have = ', '.join(f'{g.id} ({g.get("name", "")})' for g in all_games())
         raise SystemExit(f'【红】没有游戏档案 {d / "game.tsv"}（DM_GAME / GAME 用基础版标题号：{have}）| no game profile {d / "game.tsv"} (DM_GAME / GAME take the base game title ID: {have})')
@@ -56,7 +68,12 @@ def load(name=None):
 
 
 def all_games():
-    return [Game(d) for d in sorted(HERE.iterdir()) if (d / 'game.tsv').exists()]
+    out, seen = [], set()
+    for root in [HERE] + extra_dirs():
+        if not root.is_dir(): continue
+        for d in sorted(root.iterdir()):
+            if (d / 'game.tsv').exists() and d.name not in seen: seen.add(d.name); out.append(Game(d))
+    return out
 
 
 def by_title(tid):
@@ -82,6 +99,14 @@ def header(g):
     if any(not re.fullmatch(r'[0-9a-f]{8,16}', k) for k in fbs): sys.exit(f'{g.id}: feedback_snap 要写片元着色器键（8–16 位小写十六进制）| feedback_snap takes fragment shader keys (8-16 lowercase hex digits): {fbs}')
     afr = g.words('alpha_from_red', '')   # fragment shader key prefixes that read layout capture textures with R/RG channel mappings (nvn_mtl.m tex_layout_capture); none by default
     if any(not re.fullmatch(r'[0-9a-f]{8,16}', k) for k in afr): sys.exit(f'{g.id}: alpha_from_red 要写片元着色器键（8–16 位小写十六进制）| alpha_from_red takes fragment shader keys (8-16 lowercase hex digits): {afr}')
+    rcd = g.get('render_cond', 'off')   # NVN conditional rendering evaluated at replay, timestamp reports with counter 0 (nvn_mtl.m OP_RENDER_COND): on / off
+    if rcd not in ('on', 'off'): sys.exit(f'{g.id}: render_cond 只能是 on / off | render_cond must be on or off: {rcd}')
+    tfu = g.get('tex_flush_upload', 'off')   # textures written by the CPU into a pool and published with nvnMemoryPoolFlushMappedRange are uploaded like packaged ones (hle_nvn.c): on / off
+    if tfu not in ('on', 'off'): sys.exit(f'{g.id}: tex_flush_upload 只能是 on / off | tex_flush_upload must be on or off: {tfu}')
+    tdu = g.get('tex_dirty_upload', 'off')   # with tex_flush_upload: a registered texture the CPU writes after init without any flush is uploaded too (dirty pages, hle_nvn.c nvn_ft_written): on / off
+    if tdu not in ('on', 'off') or (tdu == 'on' and tfu != 'on'): sys.exit(f'{g.id}: tex_dirty_upload 只能是 on / off，且要 tex_flush_upload on | tex_dirty_upload must be on or off, and needs tex_flush_upload on: {tdu}')
+    gts = g.get('gpu_timestamps', 'submission')   # counter timestamps (nvn_mtl.m rep_ticks): submission = one time per submission, segment = the GPU start / end of the segment holding the report
+    if gts not in ('submission', 'segment'): sys.exit(f'{g.id}: gpu_timestamps 只能是 submission / segment | gpu_timestamps must be submission or segment: {gts}')
     api = g.get('device_api', '55.15')   # the NVN API major.minor version nvnDeviceGetInteger reports (hle_nvn.c)
     if not re.fullmatch(r'\d+\.\d+', api): sys.exit(f'{g.id}: device_api 要写成 主.次 | device_api must be major.minor: {api}')
     ub = g.get('mac_uniform_batch', 'off')
@@ -101,7 +126,8 @@ def header(g):
         seen.add((build, offset))
         resolution_rows.append('{' + q(build) + f', {offset:#x}, {original:#x}, {hd:#x}, {full_hd:#x}' + '}')
     resolution_rows = ', '.join(resolution_rows) or '{0}'
-    L = [f'// Generated by dm/games/game.py from dm/games/{g.id}/game.tsv; do not edit',
+    src = f'dm/games/{g.id}' if g.dir.parent == HERE else str(g.dir)
+    L = [f'// Generated by dm/games/game.py from {src}/game.tsv; do not edit',
          '#pragma once',
          f'#define DM_GAME_ID {q(g.id)}',
          f'#define DM_GAME_NAME {q(g.get("name"))}',
@@ -113,6 +139,7 @@ def header(g):
          f'#define DM_GAME_MEM_ALIAS {g.int("mem_alias"):#x}ull',
          f'#define DM_GAME_MEM_STACK {g.int("mem_stack"):#x}ull',
          f'#define DM_GAME_APP_POOL {g.int("app_pool"):#x}ull',
+         f'#define DM_GAME_MEM_USED {int(g.get("mem_used", "0x4000000"), 0):#x}ull',   # used memory reported beside the heap (hle_svc.c GetInfo UsedMemorySize)
          f'#define DM_GAME_NVN_SSBO_BASE(stage) ({sb})',
          f'#define DM_GAME_NVN_TEX_BASE {g.int("nvn_tex_base"):#x}',
          f'#define DM_GAME_NVN_TEX_SLOTS {g.int("nvn_tex_slots")}',
@@ -126,6 +153,10 @@ def header(g):
          f'#define DM_GAME_PAD_FULL {int(pl == "full")}',
          f'#define DM_GAME_FEEDBACK_SNAP {q(" ".join(fbs))}',
          f'#define DM_GAME_ALPHA_FROM_RED {q(" ".join(afr))}',
+         f'#define DM_GAME_TEX_FLUSH_UPLOAD {int(tfu == "on")}',
+         f'#define DM_GAME_RENDER_COND {int(rcd == "on")}',
+         f'#define DM_GAME_TEX_DIRTY_UPLOAD {int(tdu == "on")}',
+         f'#define DM_GAME_GPU_TS_SEGMENT {int(gts == "segment")}',
          f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}',
          f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}',
          f'#define DM_GAME_MAC_UNIFORM_BATCH {int(ub == "on")}',
@@ -141,7 +172,14 @@ if __name__ == '__main__':
     elif len(a) == 3 and a[0] == 'header':
         out = Path(a[2]); out.parent.mkdir(parents=True, exist_ok=True)
         tmp = out.with_name(out.name + '.tmp'); tmp.write_text(header(load(a[1]))); tmp.replace(out)
+    elif len(a) == 2 and a[0] == 'dir':
+        print(load(a[1]).dir)
+    elif len(a) == 3 and a[0] == 'link':   # link → the profile folder (replaced when it points elsewhere)
+        d, ln = load(a[1]).dir, Path(a[2]); ln.parent.mkdir(parents=True, exist_ok=True)
+        if not (ln.is_symlink() and Path(os.readlink(ln)) == d):
+            if ln.is_symlink() or ln.exists(): ln.unlink()
+            ln.symlink_to(d)
     elif len(a) == 2:
         print(load(a[0]).get(a[1]))
     else:
-        sys.exit(__doc__ or '用法 | usage: game.py list | game.py <id> <key> | game.py header <id> <out.h>')
+        sys.exit(__doc__ or '用法 | usage: game.py list | game.py <id> <key> | game.py header <id> <out.h> | game.py dir <id> | game.py link <id> <link>')

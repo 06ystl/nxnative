@@ -8,6 +8,8 @@ void *front_metal_layer(void) { return NULL; }   // no window in unit tests: pre
 module_t *module_of(const void *p) { (void)p; return NULL; }   // no guest modules in unit tests
 module_t g_mod[MAX_MOD]; int g_nmod;                            // host symbols that crash.c depends on
 void svc_thread_dump(void) {}
+// Tests use host stacks; the real NVN thunk can tail-call its target directly.
+__asm__(".text\n.globl _dm_bigstack_enter\n_dm_bigstack_enter:\n br x16\n");
 void crash_install(void);
 void nvn_present_config(int hz, int display_mode);
 #include <fcntl.h>

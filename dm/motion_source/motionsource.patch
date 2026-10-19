@@ -1,0 +1,429 @@
+diff --git a/MotionSourceiOS/ViewController.m b/MotionSourceiOS/ViewController.m
+index 1eeb125..fda2cd1 100644
+--- a/MotionSourceiOS/ViewController.m
++++ b/MotionSourceiOS/ViewController.m
+@@ -2,9 +2,12 @@
+ #import <CoreMotion/CoreMotion.h>
+ #import <ifaddrs.h>
+ #import <arpa/inet.h>
++#import <zlib.h>
+ 
+ #import "ViewController.h"
+ #import "PacketHandler.h"
++#import "MotionNetworkCheck.h"
++#include <errno.h>
+ 
+ #define radtodeg(x) (x * 180.0 / M_PI)
+ 
+@@ -35,6 +38,15 @@ @interface ViewController () {
+     bool accelerometerEnabled;
+     int updatesPerSec;
+     UIDeviceOrientation orientation;
++    BOOL wantsServer;
++    NSUInteger serverGeneration;
++    NSTimer *retryTimer;
++    UILabel *statusLabel;
++    NSString *lastSocketError;
++    NSString *lastClient;
++    BOOL hasSentMotion;
++    MotionNetworkCheck *networkCheck;
++    NSString *networkHint;
+ }
+ 
+ @end
+@@ -47,7 +59,8 @@ - (void)viewDidLoad {
+     // ** Networking **
+     
+     serverStarted = false;
+-    port = 26760;
++    NSInteger savedPort = [NSUserDefaults.standardUserDefaults integerForKey:@"serverPort"];
++    port = savedPort >= 1024 && savedPort <= 65535 ? (uint16_t)savedPort : 26760;
+     packetCounter = 0;
+     lastReceiveTime = 0;
+     
+@@ -81,8 +94,89 @@ - (void)viewDidLoad {
+     NSString *buildString = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleVersion"];
+     NSString *versionBuildString = [NSString stringWithFormat:@"v%@ (%@)", versionString, buildString];
+     [_versionLabel setText:versionBuildString];
++    statusLabel = [UILabel new];
++    statusLabel.translatesAutoresizingMaskIntoConstraints = NO;
++    statusLabel.numberOfLines = 0;
++    statusLabel.font = [UIFont preferredFontForTextStyle:UIFontTextStyleSubheadline];
++    statusLabel.textColor = UIColor.secondaryLabelColor;
++    statusLabel.accessibilityIdentifier = @"motionStatus";
++    UIScrollView *statusView = [UIScrollView new];
++    statusView.translatesAutoresizingMaskIntoConstraints = NO;
++    [self.view addSubview:statusView];
++    [statusView addSubview:statusLabel];
++    UIView *directions = ((UIButton *)_orientationButtons.firstObject).superview;
++    [NSLayoutConstraint activateConstraints:@[
++        [statusView.leadingAnchor constraintEqualToAnchor:self.view.layoutMarginsGuide.leadingAnchor constant:4],
++        [statusView.trailingAnchor constraintEqualToAnchor:self.view.layoutMarginsGuide.trailingAnchor constant:-4],
++        [statusView.topAnchor constraintEqualToAnchor:directions.bottomAnchor constant:20],
++        [statusView.bottomAnchor constraintEqualToAnchor:_versionLabel.topAnchor constant:-12],
++        [statusLabel.leadingAnchor constraintEqualToAnchor:statusView.contentLayoutGuide.leadingAnchor],
++        [statusLabel.trailingAnchor constraintEqualToAnchor:statusView.contentLayoutGuide.trailingAnchor],
++        [statusLabel.topAnchor constraintEqualToAnchor:statusView.contentLayoutGuide.topAnchor],
++        [statusLabel.bottomAnchor constraintEqualToAnchor:statusView.contentLayoutGuide.bottomAnchor],
++        [statusLabel.widthAnchor constraintEqualToAnchor:statusView.frameLayoutGuide.widthAnchor]
++    ]];
++    [self setStatus:@"Tap Start Server. Keep this app open; the screen will stay awake."];
++    [self updateServerButton];
++    NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
++    [nc addObserver:self selector:@selector(suspendServer:) name:UIApplicationWillResignActiveNotification object:nil];
++    [nc addObserver:self selector:@selector(resumeServer:) name:UIApplicationDidBecomeActiveNotification object:nil];
++    [nc addObserver:self selector:@selector(suspendServer:) name:UISceneWillDeactivateNotification object:nil];
++    [nc addObserver:self selector:@selector(resumeServer:) name:UISceneDidActivateNotification object:nil];
+ }
+ 
++- (void)setStatus:(NSString *)message {
++    statusLabel.text = message;
++    NSLog(@"MotionSource NX: %@", message);
++}
++
++- (void)updateServerButton {
++    UIButtonConfiguration *configuration = [_startstopServerButton.configuration copy];
++    configuration.title = wantsServer ? @"Stop Server" : @"Start Server";
++    configuration.baseForegroundColor = wantsServer ? UIColor.systemRedColor : UIColor.systemGreenColor;
++    _startstopServerButton.configuration = configuration;
++    _startstopServerButton.enabled = YES;
++}
++
++- (void)releaseServer {
++    serverGeneration++;
++    [retryTimer invalidate]; retryTimer = nil;
++    GCDAsyncUdpSocket *closing = socket;
++    socket = nil;
++    closing.delegate = nil;
++    [closing close];
++    [self stopGyroUpdates];
++    [self updateLastAddress:nil];
++    serverStarted = NO;
++    hasSentMotion = NO;
++    UIApplication.sharedApplication.idleTimerDisabled = NO;
++}
++
++- (void)retryServer {
++    if (!wantsServer || UIApplication.sharedApplication.applicationState != UIApplicationStateActive) return;
++    NSUInteger generation = serverGeneration;
++    __weak ViewController *weakSelf = self;
++    retryTimer = [NSTimer scheduledTimerWithTimeInterval:2 repeats:NO block:^(NSTimer *timer) {
++        (void)timer;
++        ViewController *self = weakSelf;
++        if (self && self->wantsServer && generation == self->serverGeneration &&
++            UIApplication.sharedApplication.applicationState == UIApplicationStateActive)
++            [self startServer];
++    }];
++}
++
++- (void)suspendServer:(NSNotification *)note {
++    (void)note;
++    if (!wantsServer) return;
++    [self releaseServer];
++    [self setStatus:@"Paused. Return to this app to resume on the same port."];
++}
++
++- (void)resumeServer:(NSNotification *)note {
++    (void)note;
++    _ipAddressLabel.text = [self getIPAddress];
++    if (wantsServer && !serverStarted) [self startServer];
++}
+ 
+ - (void)updateLastAddress:(NSData *)address {
+     lastAddress = address;
+@@ -107,15 +201,29 @@ - (void)startGyroUpdates {
+         [motionManager setDeviceMotionUpdateInterval:(1.0 / updatesPerSec)];
+     }
+     
+-    __weak id weakSelf = self;
+-    [motionManager startDeviceMotionUpdatesToQueue:[NSOperationQueue currentQueue] withHandler:^(CMDeviceMotion * _Nullable motion, NSError * _Nullable error) {
+-        if(CACurrentMediaTime() > lastReceiveTime + (CLIENT_TIMEOUT_MS / 1000)) {
++    if (!motionManager.deviceMotionAvailable) {
++        [self setStatus:@"Device motion is unavailable on this device."];
++        return;
++    }
++    NSUInteger generation = serverGeneration;
++    __weak ViewController *weakSelf = self;
++    [motionManager startDeviceMotionUpdatesToQueue:NSOperationQueue.mainQueue withHandler:^(CMDeviceMotion * _Nullable motion, NSError * _Nullable error) {
++        ViewController *self = weakSelf;
++        if (!self || generation != self->serverGeneration || !self->serverStarted) return;
++        if (error || !motion) {
++            [self setStatus:[NSString stringWithFormat:@"Sensor error: %@", error.localizedDescription ?: @"No sensor data"]];
++            [self updateLastAddress:nil];
++            [self stopGyroUpdates];
++            return;
++        }
++        if(CACurrentMediaTime() > self->lastReceiveTime + (CLIENT_TIMEOUT_MS / 1000.0)) {
+             NSLog(@"Client disconnected.");
+-            [weakSelf updateLastAddress:nil];
+-            [weakSelf stopGyroUpdates];
++            [self updateLastAddress:nil];
++            [self stopGyroUpdates];
++            [self setStatus:@"Server running. Waiting for the Mac to reconnect."];
+             return;
+         }
+-        [weakSelf handleMotionUpdate:motion withError:error];
++        [self handleMotionUpdate:motion withError:error];
+     }];
+ }
+ 
+@@ -130,6 +238,9 @@ - (void)startServer {
+         return;
+     }
+     
++    wantsServer = YES;
++    [self releaseServer];
++    [self updateServerButton];
+     socket = [[GCDAsyncUdpSocket alloc] initWithDelegate:self delegateQueue:dispatch_get_main_queue()];
+     
+     NSError *error = nil;
+@@ -137,42 +248,44 @@ - (void)startServer {
+     if(![socket bindToPort:port error:&error]) {
+         NSString *errorString = [NSString stringWithFormat:@"Error starting server (bind): %@", error];
+         NSLog(@"%@", errorString);
+-        [self displayErrorWithMessage:errorString];
++        [self releaseServer];
++        [self setStatus:[errorString stringByAppendingString:@" Retrying on the same port…"]];
++        [self retryServer];
+         
+         return;
+     }
+     if(![socket beginReceiving:&error]) {
+-        [socket close];
+-        
+         NSString *errorString = [NSString stringWithFormat:@"Error starting server (beginRecv): %@", error];
+         NSLog(@"%@", errorString);
+-        [self displayErrorWithMessage:errorString];
++        [self releaseServer];
++        [self setStatus:[errorString stringByAppendingString:@" Retrying on the same port…"]];
++        [self retryServer];
+         
+         return;
+     }
+     
+-    [_startstopServerButton setTitleColor:[UIColor redColor] forState:UIControlStateNormal];
+-    [_startstopServerButton setTitle:@"Stop Server" forState:UIControlStateNormal];
+     NSLog(@"UDP server started on address %@, port %hu", [socket localHost], [socket localPort]);
+     serverStarted = true;
++    UIApplication.sharedApplication.idleTimerDisabled = YES;
++    _ipAddressLabel.text = [self getIPAddress];
++    NSString *listening = [NSString stringWithFormat:@"Listening on %@:%hu. Waiting for the Mac.", _ipAddressLabel.text ?: @"Wi-Fi", port];
++    if (networkHint) listening = [NSString stringWithFormat:@"%@\n%@", listening, networkHint];
++    [self setStatus:lastSocketError ? [NSString stringWithFormat:@"%@\nLast error: %@", listening, lastSocketError] : listening];
+ }
+ 
+ - (void)stopServer {
+-    if(!serverStarted) {
+-        NSLog(@"Cannot stop server because it's not started. This should not happen.");
+-        return;
+-    }
+-    
+-    NSLog(@"Stopping server..");
+-    [socket close];
+-    [self updateLastAddress:nil];
+-    [self stopGyroUpdates];
+-    [_startstopServerButton setEnabled:false];
+-    // button waits for delegate method udpSocketDidClose:withError: to be called
++    wantsServer = NO;
++    [networkCheck cancel]; networkCheck = nil;
++    networkHint = nil;
++    lastSocketError = nil;
++    lastClient = nil;
++    [self releaseServer];
++    [self updateServerButton];
++    [self setStatus:@"Server stopped."];
+ }
+ 
+ - (IBAction)startstopServer {
+-    if(serverStarted) {
++    if(wantsServer) {
+         [self stopServer];
+     } else {
+         [self startServer];
+@@ -185,10 +298,14 @@ - (IBAction)setPortPressed:(id)sender {
+        && [[_portTextField text] intValue] <= 65535) {
+         int intValue = [[_portTextField text] intValue];
+         port = intValue;
++        [NSUserDefaults.standardUserDefaults setInteger:port forKey:@"serverPort"];
+         
+         [_startstopServerButton setEnabled:true];
+         [self.view endEditing:true];
+-        [self stopServer];
++        BOOL restart = wantsServer;
++        [self releaseServer];
++        if (restart) [self startServer];
++        else [self setStatus:@"Port applied. Tap Start Server."];
+     } else {
+         NSString *errorMessage = [NSString stringWithFormat:@"The port must be in the range %d-%d", 1024, 65535];
+         [self displayErrorWithMessage:errorMessage];
+@@ -270,17 +387,59 @@ - (IBAction)aboutPressed:(id)sender {
+ 
+ 
+ - (void)textFieldDidBeginEditing:(UITextField *)textField {
+-    [_startstopServerButton setEnabled:false];
++    (void)textField;
++    // Stop remains available while editing; Set applies a new port explicitly.
+ }
+ 
+ 
+ - (void)udpSocketDidClose:(GCDAsyncUdpSocket *)sock withError:(NSError *)error {
+-    [_startstopServerButton setEnabled:true];
+-    [_startstopServerButton setTitleColor:[UIColor greenColor] forState:UIControlStateNormal];
+-    [_startstopServerButton setTitle:@"Start Server" forState:UIControlStateNormal];
+-    NSLog(@"Stopped UDP server");
+-    socket = nil;
+-    serverStarted = false;
++    if (sock != socket) return;
++    NSString *peer;
++    uint16_t peerPort = 0;
++    if (lastAddress) [GCDAsyncUdpSocket getHost:&peer port:&peerPort fromAddress:lastAddress];
++    NSString *reason = error.localizedFailureReason;
++    lastSocketError = [NSString stringWithFormat:@"%@ (%@ %ld)%@%@. Mac: %@",
++        error.localizedDescription ?: @"Socket closed", error.domain ?: @"Socket", (long)error.code,
++        reason.length ? @"; " : @"", reason ?: @"", lastClient ?: @"No request received"];
++    [self releaseServer];
++    [self updateServerButton];
++    NSString *failure = [NSString stringWithFormat:@"Connection error: %@. Retrying on port %hu…", lastSocketError, port];
++    [self setStatus:networkHint ? [NSString stringWithFormat:@"%@\n%@", networkHint, failure] : failure];
++    [self retryServer];
++    if ([error.domain isEqualToString:NSPOSIXErrorDomain] && error.code == EHOSTUNREACH &&
++        peer.length && !networkCheck && !networkHint) {
++        networkCheck = [MotionNetworkCheck new];
++        __weak ViewController *weakSelf = self;
++        [networkCheck startWithHost:peer port:peerPort changed:^(NSString *message, BOOL needsSettings) {
++            ViewController *self = weakSelf;
++            if (!self || !self->wantsServer) return;
++            BOOL firstHint = !self->networkHint;
++            self->networkHint = message;
++            [self setStatus:[NSString stringWithFormat:@"%@\nLast error: %@", message, self->lastSocketError ?: @"No error"]];
++            if (firstHint && needsSettings && !self.presentedViewController &&
++                UIApplication.sharedApplication.applicationState == UIApplicationStateActive) {
++                UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"Network access needed" message:message preferredStyle:UIAlertControllerStyleAlert];
++                [alert addAction:[UIAlertAction actionWithTitle:@"Not Now" style:UIAlertActionStyleCancel handler:nil]];
++                [alert addAction:[UIAlertAction actionWithTitle:@"Open App Settings" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
++                    (void)action;
++                    [UIApplication.sharedApplication openURL:[NSURL URLWithString:UIApplicationOpenSettingsURLString] options:@{} completionHandler:nil];
++                }]];
++                [self presentViewController:alert animated:YES completion:nil];
++            }
++        }];
++    }
++}
++
++- (void)udpSocket:(GCDAsyncUdpSocket *)sock didSendDataWithTag:(long)tag {
++    (void)tag;
++    if (sock != socket || !serverStarted || !lastAddress) return;
++    if (!hasSentMotion || lastSocketError) {
++        hasSentMotion = YES;
++        lastSocketError = nil;
++        networkHint = nil;
++        [networkCheck cancel]; networkCheck = nil;
++        [self setStatus:[NSString stringWithFormat:@"Sending phone motion to %@.", lastClient]];
++    }
+ }
+ 
+ - (void)handleMotionUpdate:(CMDeviceMotion *)motionData withError:(NSError *)error {
+@@ -418,38 +577,26 @@ - (void)handleMotionUpdate:(CMDeviceMotion *)motionData withError:(NSError *)err
+ 
+ 
+ - (void)udpSocket:(GCDAsyncUdpSocket *)sock didReceiveData:(NSData *)data fromAddress:(NSData *)address withFilterContext:(id)filterContext {
+-    bool newClient = !lastAddress;
+-    [self updateLastAddress:address];
+-    lastReceiveTime = CACurrentMediaTime();
+-    if(newClient) {
+-        [self startGyroUpdates];
+-        
+-        NSString *client;
+-        uint16_t clientPort;
+-        [GCDAsyncUdpSocket getHost:&client port:&clientPort fromAddress:address];
+-        NSLog(@"New client: %@:%d", client, clientPort);
+-    }
+-    
+-    const unsigned char *bufPtr = [data bytes];
+-    
+-    if(strncmp((const char *)bufPtr, "DSUC", 4) != 0)
+-        return;
+-    bufPtr += 4;
+-    
+-    uint16_t protocolVer = *(uint16_t *)(bufPtr);
+-    bufPtr += 2;
+-    
+-    uint16_t packetSize = *(uint16_t *)(bufPtr);
+-    bufPtr += 2;
+-    
+-    uint32_t crcValue = *(uint32_t *)(bufPtr); //TODO: verify crc
+-    bufPtr += 4;
+-    
+-    uint32_t clientID = *(uint32_t *)(bufPtr);
+-    bufPtr += 4;
+-    
+-    MessageType messageType = *(uint32_t *)(bufPtr);
+-    bufPtr += 4;
++    (void)filterContext;
++    if (sock != socket || !serverStarted || data.length < 20) return;
++    const uint8_t *bytes = data.bytes;
++    uint16_t version, size;
++    uint32_t expectedCRC;
++    memcpy(&version, bytes + 4, 2); memcpy(&size, bytes + 6, 2); memcpy(&expectedCRC, bytes + 8, 4);
++    if (memcmp(bytes, "DSUC", 4) || version != 1001 || size != data.length - 16) return;
++    NSMutableData *checked = [data mutableCopy];
++    memset((uint8_t *)checked.mutableBytes + 8, 0, 4);
++    if ((uint32_t)crc32(0, checked.bytes, (uInt)checked.length) != expectedCRC) return;
++
++    MessageType messageType;
++    memcpy(&messageType, bytes + 16, 4);
++    const uint8_t *bufPtr = bytes + 20;
++    if ((messageType == MessageTypeDSUCListPorts && data.length < 24) ||
++        (messageType == MessageTypeDSUCPadDataReq && data.length < 28)) return;
++    NSString *client;
++    uint16_t clientPort;
++    if ([GCDAsyncUdpSocket getHost:&client port:&clientPort fromAddress:address])
++        lastClient = [NSString stringWithFormat:@"%@:%hu", client, clientPort];
+     
+     if(messageType == MessageTypeDSUCVersionReq) {
+         //NSLog(@"messageType: DSUC_VersionReq");
+@@ -467,9 +614,6 @@ - (void)udpSocket:(GCDAsyncUdpSocket *)sock didReceiveData:(NSData *)data fromAd
+     } else if(messageType == MessageTypeDSUCListPorts) {
+         //NSLog(@"messageType: DSUC_ListPorts");
+         
+-        int numPadRequests = *(uint32_t *)(bufPtr);
+-        bufPtr += 4;
+-        
+         uint8_t outputData[16];
+         uint8_t *outPtr = outputData;
+         *(uint32_t *)(outPtr) = MessageTypeDSUSPortInfo;
+@@ -514,16 +658,15 @@ - (void)udpSocket:(GCDAsyncUdpSocket *)sock didReceiveData:(NSData *)data fromAd
+          *(uint32_t *)(outputData+12) = 0x00000000;
+          sendPacket(udp.remoteIP(), udp.remotePort(), outputData, sizeof(outputData));*/
+     } else if(messageType == MessageTypeDSUCPadDataReq) {
+-        //NSLog(@"messageType: DSUC_PadDataReq");
+-        
+-        uint8_t regFlags = *bufPtr;
+-        bufPtr++;
+-        uint8_t idToReg = *bufPtr;
+-        bufPtr++;
+-        
+-        /*CMGyroData *gyroData = motionManager.gyroData;
+-        if(gyroData != nil)
+-            [self handleGyroUpdate:gyroData withError:nil];*/
++        if ((bufPtr[0] & 1) && bufPtr[1] != 0) return;
++        bool newClient = !lastAddress;
++        [self updateLastAddress:address];
++        lastReceiveTime = CACurrentMediaTime();
++        if (newClient) {
++            [self setStatus:[NSString stringWithFormat:@"Motion requested by %@.%@", lastClient,
++                lastSocketError ? [NSString stringWithFormat:@"\nLast error: %@", lastSocketError] : @""]];
++            [self startGyroUpdates];
++        }
+     }
+ }
+ 
+@@ -536,7 +679,7 @@ - (NSString *)getIPAddress {
+     if (success == 0) {
+         temp_addr = interfaces;
+         while(temp_addr != NULL) {
+-            if(temp_addr->ifa_addr->sa_family == AF_INET) {
++            if(temp_addr->ifa_addr && temp_addr->ifa_addr->sa_family == AF_INET) {
+                 if([[NSString stringWithUTF8String:temp_addr->ifa_name] isEqualToString:@"en0"]) {
+                     address = [NSString stringWithUTF8String:inet_ntoa(((struct sockaddr_in *)temp_addr->ifa_addr)->sin_addr)];
+                 }

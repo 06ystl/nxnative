@@ -51,3 +51,8 @@ t_binding_cache
 t_binding_cache.dSYM/
 t_layout_capture
 t_layout_capture.dSYM/
+
+*_legacy
+t_backend
+*_legacy.dSYM/
+t_backend.dSYM/

@@ -60,7 +60,7 @@ static id<MTLTexture> color;
 static id<MTLRenderPipelineState> pipeline;
 static id<MTLBuffer> vertices, tints;
 static const uint64_t tint_stride = 16;
-static void bind(id<MTL4RenderCommandEncoder> e, int hidden, int tint) {
+static void bind(id e, int hidden, int tint) {
     enc_r_vbuf(e, 16, vertices.gpuAddress + (hidden ? 48 : 0));
     enc_r_args(e, MTLRenderStageVertex, tints.gpuAddress + tint * tint_stride, 0);
     enc_r_args(e, MTLRenderStageFragment, tints.gpuAddress, 0);
@@ -73,11 +73,11 @@ static void render(int mode, id<MTLBuffer> __strong out[2]) {
         // reapply its first bindings even when their values match the last draw.
         [g_vt setAddress:vertices.gpuAddress + 48 atIndex:16];
         [g_vt setAddress:tints.gpuAddress + tint_stride atIndex:0];
-        MTL4RenderPassDescriptor *rp = [MTL4RenderPassDescriptor new];
+        MTLRenderPassDescriptor *rp = backend_render_pass();
         rp.colorAttachments[0].texture = color; rp.colorAttachments[0].loadAction = MTLLoadActionClear;
         rp.colorAttachments[0].storeAction = MTLStoreActionStore;
         rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
-        id<MTL4RenderCommandEncoder> e = enc_r_begin(rp); enc_r_pso(e, pipeline);
+        id e = enc_r_begin(rp); enc_r_pso(e, pipeline);
         enc_r_viewport(e, (MTLViewport){0, 0, 8, 2, 0, 1});
         enc_r_cull(e, MTLCullModeNone);
         if (pass) {
