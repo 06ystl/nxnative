@@ -9,7 +9,7 @@ It is not an emulator: the game's own code runs directly on the Apple chip, with
 This project is built on other people's work:
 
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this native-execution approach, for Diablo II: Resurrected. nxnative (first called smbw-mobile) started as a copy of its generic parts: the NSO rewriter, the host that stands in for Horizon, the NVN-on-Metal layer and the iOS app shell. Fixes go both ways.
-- **Ryujinx** (MIT): its shader translator (`Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator` 1.3.2, unmodified in `dm/third_party/ryujinx`) turns the games' Maxwell shaders into SPIR-V. Its emulation of the kernel and system services is also a reference when the host's behaviour is in doubt.
+- **Ryujinx** (MIT): its shader translator (`Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator` 1.3.2, with local translation fixes in `dm/third_party/ryujinx`) turns the games' Maxwell shaders into SPIR-V. Its emulation of the kernel and system services is also a reference when the host's behaviour is in doubt.
 - **[Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)**: its kernel, mesosphère, is the reference for Horizon's synchronization semantics (address arbiter, condition variables).
 - **yuzu**: Maxwell instruction encodings for the shader reference tool, and a cross-check for kernel behaviour.
 - **[LibHac](https://github.com/Thealexbarney/LibHac)**: reads NSPs and layers updates over the base game in `dm/tools/nx_extract`. **hactool** did the first extractions.
@@ -32,12 +32,13 @@ All of these are tested on an iPhone and playable:
 | The Legend of Zelda: Breath of the Wild | base game + update 1.9.0 (+ DLC) | ~16 GB | Upgraded to 60 fps (30 fps on Switch) |
 | The Legend of Zelda: Link's Awakening | base game + update 1.1.0 | ~6 GB | |
 | Super Mario Odyssey | base game + update 1.4.1 | ~6 GB | |
+| Hades | base game + update 1.0.38233 | ~4 GB | |
+| Hyrule Warriors: Age of Calamity | base game + update 1.3.0 (+ DLC) | ~15 GB | |
+| Fire Emblem: Three Houses | base game + update 1.2.0 (+ DLC) | ~13 GB | While packing, the script starts the game on the Mac for a few seconds to collect the shaders it builds as it runs |
 
-Being ported, playable on the Mac, with iPhone builds not tested yet:
+Being ported:
 
-- Hades (base game + update 1.0.38233): the script cannot pack it yet.
-- Hyrule Warriors: Age of Calamity (base game + update 1.3.0, + DLC): up to its first battle.
-- Fire Emblem: Three Houses (base game + update 1.2.0, + DLC): through its prologue. While packing, the script starts the game on the Mac for a few seconds to collect the shaders it builds as it runs.
+- The Legend of Zelda: Tears of the Kingdom (base game + update 1.4.3): its opening cave renders on the Mac; it doesn't fit in an iPhone's memory yet.
 
 | | |
 |:---:|:---:|
@@ -45,6 +46,8 @@ Being ported, playable on the Mac, with iPhone builds not tested yet:
 | ![Metroid Dread](docs/images/metroid-dread.jpg)<br>Metroid Dread | ![13 Sentinels: Aegis Rim](docs/images/13-sentinels.jpg)<br>13 Sentinels: Aegis Rim |
 | ![Super Mario 3D World + Bowser's Fury](docs/images/super-mario-3d-world.jpg)<br>Super Mario 3D World + Bowser's Fury | ![The Legend of Zelda: Breath of the Wild](docs/images/zelda-breath-of-the-wild.jpg)<br>The Legend of Zelda: Breath of the Wild |
 | ![The Legend of Zelda: Link's Awakening](docs/images/zelda-links-awakening.jpg)<br>The Legend of Zelda: Link's Awakening | ![Super Mario Odyssey](docs/images/super-mario-odyssey.jpg)<br>Super Mario Odyssey |
+| ![Hades](docs/images/hades.jpg)<br>Hades | ![Hyrule Warriors: Age of Calamity](docs/images/hyrule-warriors-age-of-calamity.jpg)<br>Hyrule Warriors: Age of Calamity |
+| ![Fire Emblem: Three Houses](docs/images/fire-emblem-three-houses.jpg)<br>Fire Emblem: Three Houses | |
 
 Builds now target iOS / iPadOS 17 or later, with an experimental Metal 3 compatibility path on older systems. Supported iOS 26+ devices keep Metal 4. The iPhone results above were obtained on the original iOS 26 path; iOS 17 device testing is pending.
 
@@ -119,7 +122,7 @@ Breath of the Wild 1.9.0 Mac builds support `DM_GAME_RES=1920x1080` for true 108
 
 ## Play
 
-**Touch controls.** Tap **2D** / **3D** at the top to switch layouts; the app remembers your choice. 3D World, Breath of the Wild and Odyssey start in 3D, the other games in 2D.
+**Touch controls.** Tap **2D** / **3D** at the top to switch layouts; the app remembers your choice. 3D World, Breath of the Wild, Odyssey, Hades, Age of Calamity and Three Houses start in 3D, the other games in 2D.
 A connected game controller hides the touch controls and keeps every button.
 
 - **Game language** is English by default. For Chinese, add the line `DM_LANG=zh-Hans` to `Documents/env.txt`.
@@ -132,6 +135,7 @@ A connected game controller hides the touch controls and keeps every button.
 
 - No amiibo and no online features.
 - Fire Emblem Engage: after switching away from the app and back, some sounds may stay silent until you restart it.
+- Fire Emblem: Three Houses: small square patches on the ground where decals land.
 
 ## For developers
 
@@ -154,7 +158,7 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license; see [dm/th
 本项目建立在他人的工作之上：
 
 - **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)**（MIT）为《暗黑破坏神 II：狱火重生》开发了这套原生运行方法。nxnative（最初叫 smbw-mobile）从它的通用部分起步：NSO 改写器、代替 Horizon 的宿主、Metal 上的 NVN 层和 iOS 应用外壳。修正双向共享。
-- **Ryujinx**（MIT）：它的着色器翻译器（`Ryujinx.Graphics.Shader`、`Ryujinx.Common` 和 `Spv.Generator` 1.3.2，原样放在 `dm/third_party/ryujinx`）把游戏的 Maxwell 着色器转成 SPIR-V。宿主行为拿不准时，它对内核和系统服务的模拟也是参考。
+- **Ryujinx**（MIT）：它的着色器翻译器（`Ryujinx.Graphics.Shader`、`Ryujinx.Common` 和 `Spv.Generator` 1.3.2，包含本地翻译修复，放在 `dm/third_party/ryujinx`）把游戏的 Maxwell 着色器转成 SPIR-V。宿主行为拿不准时，它对内核和系统服务的模拟也是参考。
 - **[Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)**：它的内核 mesosphère 是 Horizon 同步语义（地址仲裁器、条件变量）的参考。
 - **yuzu**：着色器参考工具用到的 Maxwell 指令编码，以及内核行为的交叉核对。
 - **[LibHac](https://github.com/Thealexbarney/LibHac)**：在 `dm/tools/nx_extract` 里读取 NSP、把更新叠到本体上。最早的解包用的是 **hactool**。
@@ -177,12 +181,13 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license; see [dm/th
 | 塞尔达传说 旷野之息 | 本体 + 1.9.0 更新（+ DLC） | 约 16 GB | 升级到 60 fps（Switch 上 30 fps） |
 | 塞尔达传说 织梦岛 | 本体 + 1.1.0 更新 | 约 6 GB | |
 | 超级马力欧 奥德赛 | 本体 + 1.4.1 更新 | 约 6 GB | |
+| 哈迪斯 | 本体 + 1.0.38233 更新 | 约 4 GB | |
+| 塞尔达无双 灾厄启示录 | 本体 + 1.3.0 更新（+ DLC） | 约 15 GB | |
+| 火焰纹章 风花雪月 | 本体 + 1.2.0 更新（+ DLC） | 约 13 GB | 打包时，脚本会在 Mac 上启动游戏几秒，收集游戏运行时编译的着色器 |
 
-正在移植、已能在 Mac 上游玩，iPhone 构建尚未测试：
+正在移植：
 
-- 哈迪斯（本体 + 1.0.38233 更新）：脚本暂时还不能打包。
-- 塞尔达无双 灾厄启示录（本体 + 1.3.0 更新，+ DLC）：可以进入第一场战斗。
-- 火焰纹章 风花雪月（本体 + 1.2.0 更新，+ DLC）：可以完成序章。打包时，脚本会在 Mac 上启动游戏几秒，收集游戏运行时编译的着色器。
+- 塞尔达传说 王国之泪（本体 + 1.4.3 更新）：开场洞穴已在 Mac 上渲染；目前仍超出 iPhone 的内存限制。
 
 | | |
 |:---:|:---:|
@@ -190,6 +195,8 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license; see [dm/th
 | ![密特罗德 生存恐惧](docs/images/metroid-dread.jpg)<br>密特罗德 生存恐惧 | ![十三机兵防卫圈](docs/images/13-sentinels.jpg)<br>十三机兵防卫圈 |
 | ![超级马力欧 3D 世界 + 狂怒世界](docs/images/super-mario-3d-world.jpg)<br>超级马力欧 3D 世界 + 狂怒世界 | ![塞尔达传说 旷野之息](docs/images/zelda-breath-of-the-wild.jpg)<br>塞尔达传说 旷野之息 |
 | ![塞尔达传说 织梦岛](docs/images/zelda-links-awakening.jpg)<br>塞尔达传说 织梦岛 | ![超级马力欧 奥德赛](docs/images/super-mario-odyssey.jpg)<br>超级马力欧 奥德赛 |
+| ![哈迪斯](docs/images/hades.jpg)<br>哈迪斯 | ![塞尔达无双 灾厄启示录](docs/images/hyrule-warriors-age-of-calamity.jpg)<br>塞尔达无双 灾厄启示录 |
+| ![火焰纹章 风花雪月](docs/images/fire-emblem-three-houses.jpg)<br>火焰纹章 风花雪月 | |
 
 现在构建的最低版本为 iOS / iPadOS 17，旧系统使用实验性的 Metal 3 兼容路径，支持 Metal 4 的 iOS 26+ 设备继续使用 Metal 4。上表的 iPhone 测试结果来自原有 iOS 26 路径，iOS 17 真机测试尚待完成。
 
@@ -264,7 +271,7 @@ Mac 手机体感：可以用 Xbox 手柄负责按键和摇杆，同时用 iPhone
 
 ## 游玩
 
-**触屏按键。** 点顶部的 **2D** / **3D** 切换布局，App 会记住你的选择。3D 世界、旷野之息和奥德赛默认 3D 布局，其他游戏默认 2D。
+**触屏按键。** 点顶部的 **2D** / **3D** 切换布局，App 会记住你的选择。3D 世界、旷野之息、奥德赛、哈迪斯、灾厄启示录和风花雪月默认 3D 布局，其他游戏默认 2D。
 
 
 连上游戏手柄后，触屏按键会隐藏，手柄上的所有按键都能用。
@@ -279,6 +286,7 @@ Mac 手机体感：可以用 Xbox 手柄负责按键和摇杆，同时用 iPhone
 
 - 没有 amiibo，也没有联网功能。
 - 火焰纹章 Engage：切到别的 App 再回来后，部分声音可能一直没有，要重开游戏。
+- 火焰纹章 风花雪月：地面贴花处存在小方块。
 
 ## 开发者
 

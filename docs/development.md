@@ -204,7 +204,7 @@ python3 -m unittest discover -s dm/tools/tests -p test_game_profile.py
 ### Mac uniform-update batching
 
 BotW's profile enables uniform-update batching automatically on Mac through
-`mac_uniform_batch=on`. Other profiles default to `off`; iOS keeps its existing
+`mac_uniform_batch=on`. Other profiles default to `off`; iOS keeps its profile-independent
 path. No runtime setting is needed.
 
 The replay prepares immutable GPU copies for a flat sequence of updates to the
@@ -212,8 +212,11 @@ same uniform range. Each draw binds its own version; the final updated bytes
 are copied back before the next operation. Eligibility requires explicit
 read-only shader bindings, private sampled textures, and no vertex/index
 buffer alias. Program/state changes, copies, dispatches and command-list
-boundaries end the sequence. Unknown or indirect shader access uses the
-original ordered-copy path. GPU ordering is preserved and shader libraries are unchanged.
+boundaries end the sequence. Other updates can use the general deferred path
+when their data fully covers the binding; partial coverage or reads through
+vertex, index, indirect or storage buffers end the pass and apply the updates
+before the draw. Starting a snapshot batch first flushes pending deferred updates.
+GPU ordering is preserved and shader libraries are unchanged.
 
 Snapshot preparation uses independent copies of the original binding, followed
 by a single barrier and the individual patches. This is equivalent to copying
@@ -427,6 +430,7 @@ GAME=$G W=$W dm/ios/tools/build_ipa.sh [out.ipa]
 ```
 
 Notes on these steps:
+- `dmsh_build.py` compiles each shader's Metal source through a cache keyed by that source, the compile flags and the compiler (`dm/gfx/tools/dmsh_mtlcache.py`, in `<cache>/cas/metallib/`). A chain change that leaves a shader's MSL unchanged, such as a translator fix, costs that shader no Metal compile. Before building, the cache takes the libraries of the earlier `b-*/` folders beside its output (and beside `IOSOUT`), and of `DMSH_PREFILL=<Mac root>[=<iOS root>]` (several separated by `:`). It takes a folder only when its recorded flags are the current ones and a fresh compile of a few of its shaders reproduces their libraries byte for byte. The summary line `Metal cache:` shows reused, compiled and filled counts per target.
 - `build_ipa.sh` takes the rewritten modules from `$W/build/patched_<package>` and the RomFS from `$W/data/<package>/RomFS`; `PATCHED` and `ROMFS` override them.
 - It also bundles a standard font (macOS's Arial Unicode, `STD_FONT=` overrides it) and the generated `nintendo_ext.ttf`.
 - The icon is the `icon.jpg` that `nx_extract` saves next to `RomFS/`; `DM_ICON=` points at another image.
@@ -448,6 +452,16 @@ The lines name shaders by content key and hold no compiled code and nothing pers
 
 Record on the game version you ship. At launch the log names each list it read and its line count (`管线预热清单 … 行`), or says that `pso_user.tsv` does not exist yet.
 
+## Power
+
+The game's own work and its frame rate stay as they are; the host avoids work of its own that the Switch never did. Every 300 frames the log has a `功耗` line (CPU energy in watts and per frame, CPU time, wakeups, thermal state, the threads that yield most) and a `驻留集` line; [05](agents/05-debugging.md) explains them.
+
+- **Yield loops.** On the Switch, a yield with nothing else to run is free; a guest loop that polls the clock or a flag and yields is a busy spin on the host. Three Houses waits out each frame this way (228,000 yields a frame on an iPhone), and Breath of the Wild's `PlacementMgr` and `RadarMgr` wait for work this way. After 200 µs of consecutive yields with no other SVC, each yield sleeps an eighth of the wait so far, from 10 to 250 µs (`DM_YIELD_BACKOFF=0` turns it off, `=<µs>` sets the cap). Three Houses on the Mac: CPU energy 3.5 W → 0.5 W, same frame times.
+- **Waits block instead of polling:** the in-process audio renderer, upload batches, `nvnQueueFinish`. A signalled event wakes only the threads waiting on it; leaving an SVC takes the global lock only while a pause (IL2CPP's garbage collector) is pending.
+- **Real-time policy.** The thread that acquires the window texture declares a Mach time-constraint policy, which tells the performance controller the frame deadline. `DM_RT=0` leaves it on its QoS, for measuring.
+- **Replay CPU.** Memory-pool addresses are cached per thread; per-encoder draw state is sent only when it changes; texture IDs of GPU-only textures stay cached when the game writes other memory; upload staging blocks are reused (Breath of the Wild used to allocate, make resident and free a 32 MB block for each re-upload of a small CPU-written texture, about 3 GB/s) and the residency set is committed only when it changed.
+- **GPU.** An inline uniform update inside a render pass no longer ends the pass (Metroid Dread ended about 246 passes a frame this way, each one storing and reloading its attachments): the update lands when the pass ends, and the draws after it read a copy of the updated data (`DM_NVN_UB_DEFER=0` restores the old behaviour). A format-changing texture copy that covers the whole destination level does not load it first. `DM_NVN_BARRIER=game` lets a pass's vertex work overlap the previous pass ([04](agents/04-graphics.md) section 7); it is off by default, as the games issue their own barriers before most passes anyway.
+
 ## Game notes
 
 **Super Mario Bros. Wonder (`010015100B514000`)**
@@ -467,7 +481,7 @@ Record on the game version you ship. At launch the log names each list it read a
 - Patches to the game's frame-interval logic lift its 30 fps limit to 60. The game's time step follows its frame interval, so the speed is right at a steady 60, 30 or 20. The game picks the interval from the frame's CPU time and its GPU time, which it reads from two GPU timestamps around the frame; the host gives each timestamp the GPU time of the work around it (profile key `gpu_timestamps`). So when the device can't hold 60 the game drops to 30 at the right speed. Before, it saw only the main thread's CPU time (about 3 ms a frame in the first shrine) and stayed at 60 in slow motion: at 40 fps, about two thirds of the normal speed (an iPhone 16 Pro Max in handheld mode, GitHub issue #9; [04](agents/04-graphics.md)).
 - **Memory:** about 2.8 GB in the first shrine in handheld mode, idle or walking (Mac measurement), against the 3.4 GB an 8 GB iPhone gives the app.
 - The game waits for each frame's GPU work before submitting the next, so the host hands its translated commands to the GPU in segments ([04](agents/04-graphics.md)).
-- **Layout capture masks:** R8 captures store their alpha mask in red; RG8 captures store luminance in red and alpha in green. The profile's `alpha_from_red` list selects the layout shaders that receive these channel mappings. This fixes HUD shadow/glow boxes and the solid red rectangles around Game Over text while preserving explicit texture mappings ([04](agents/04-graphics.md)).
+- **HUD prompt shadows and glows, stamina wheel, System menu background:** the game rebuilds each layout capture (a blurred mask of a prompt bar, the menu's background) on the same storage with its own channel mapping and keeps the new texture only if `nvnTextureCompare` calls the two different; the host's comparison ignored the mapping, so captures read alpha 1 (hard-edged dark boxes, cream cloud rectangles, a black menu background). It compares the mapping now ([04](agents/04-graphics.md)).
 
 **The Legend of Zelda: Link's Awakening (`01006BB00C6F0000`)**
 - **Engine:** Grezzo's engine on NintendoWare, SDK 8.2.0 (the oldest so far), NVN 53. Modules main + subsdk0 (GLSLC, NVN's runtime shader compiler) + subsdk1 (movie) + sdk; 9,698 shaders from the bfsha archives, effects and layouts.
@@ -486,20 +500,20 @@ Record on the game version you ship. At launch the log names each list it read a
 - **Start-up services:** it calls several system services no other game did, each answered by the host: the aborting `account::OpenPreselectedUser` and `GetLastOpenedUser`, news delivery (`bcat`: the delivery storage does not mount, which the game treats as "nothing delivered"), HOME-button blocking, the parental 3D-mode setting, `vi::SetLayerScalingMode`, `time::ToPosixTimeFromUtc`, the debug pad, and the SDK 7 names of two audio-device calls ([03](agents/03-bringup.md)).
 - **Movies:** MP4 / H.264 (the videos in its tutorial hint boxes, the kingdom travel videos), 41 of 44 High or Main profile with B-frames. The host decodes them with VideoToolbox; the SDK's demuxer passes the parameter sets as the `avcc` record (the MP4 `avcC` box), and pictures leave in presentation order through a small queue.
 - **Sticks:** the game reads all 16 entries of the controller history whatever count comes back; the host now fills every entry (before, only the first, and neither stick did anything in play while buttons and menus worked).
-- **HUD:** the coin counters are layout panes that take their alpha from single-channel render targets, as in Breath of the Wild; the profile lists the 26 layout shaders under `alpha_from_red` (before, they were solid white cards).
+- **HUD:** the coin counters are layout panes that take their alpha from single-channel render targets, as in Breath of the Wild; the profile lists the 26 layout shaders under `alpha_from_red` (before, they were solid white cards). Since the `nvnTextureCompare` fix the game's own capture mapping does that and the list no longer fires on the Mac ([04](agents/04-graphics.md)).
 - **Ground:** a depth pre-pass followed by a less-or-equal G-buffer pass needs bit-identical positions from different vertex shaders; every shader is now compiled with `-fpreserve-invariance` (before, the Cap Kingdom ground showed stale 32×32 blocks on every fourth frame) ([04](agents/04-graphics.md)).
 - **Fog:** the Cap Kingdom ground fog parts around Mario through a small fluid simulation fed by point-sprite splats. Their vertex shader clamps the point size to the driver segment's `c0 + 0x610`, which the host left at 0, so no splat was ever drawn and the fog never moved; the host now writes the largest point size there ([04](agents/04-graphics.md)).
 
-**Hades (`0100535012974000`), being ported**
+**Hades (`0100535012974000`)**
 - **Engine:** Supergiant's engine on The Forge renderer, SDK 9.3.0, update 1.0.38233. It renders with **Vulkan**: `main` imports 100 `vk*` functions from subsdk0 (the Vulkan loader, over NVIDIA's driver in subsdk1). The host implements them on Metal itself (`dm/gfx/vk/hle_vk.m`), so only main and sdk are loaded; the profile says `graphics vulkan`.
 - **Vulkan layer:** one Tegra X1-like device (Vulkan 1.1); device memory is a shared `MTLBuffer` made on first use, images are their own textures; command buffers are recorded and replayed into one Metal command buffer per submit on the layer's own queue; swapchain images are shown through the NVN layer's present path once their frame's GPU work is done. Names the game asks for through `vkGet*ProcAddr` are logged once each.
 - **Shaders:** 74 SPIR-V files in `Content/EffectsForgeSwitch`. `dm/gfx/tools/vk_shaders.py <RomFS> <shader dir> [--ios <dir>]` translates them with SPIRV-Cross into `<dir>/vk/`: one library, and a table of the Metal slot each (set, binding) moved to. The game hands the same words to `vkCreateShaderModule`, so the host finds each shader by the hash of its SPIR-V.
 - **Notification event:** the game polls `oe::GetNotificationMessageEvent` every frame; the SDK's own event was never created (the host's `oe::Initialize` is a no-op), so the host now hands out an event of its own, signalled while a notification is queued.
 - **Online:** its `EOS_*` imports (Epic Online Services, an NRO it would load through `nn::ro`) stay offline.
 - **Mac input:** `DM_KEYS="f800:A,f1000:A,f1200:A,f1500:A,f1900:A"` goes through the title and the intro into Tartarus.
-- **Packing:** the NSP script does not translate Vulkan shaders yet. Run `vk_shaders.py` with `--ios <work folder>/build/ios/dmsh_b`, then `build_ipa.sh` (see [Build by hand](#build-by-hand-mac)).
+- **Packing:** for a `graphics vulkan` profile the NSP script runs `vk_shaders.py` (Mac and iOS libraries in `<id>_build/shader/vk` and `shader/ios/vk`) in place of the NVN shader split and chain build.
 
-**Hyrule Warriors: Age of Calamity (`01002B00111A2000`), being ported**
+**Hyrule Warriors: Age of Calamity (`01002B00111A2000`)**
 - **Engine:** Koei Tecmo's KTGL on NVN, SDK 9.6.0, update 1.3.0 (v327680), four DLC packages (one is only a licence). Modules main + subsdk0 (movie) + sdk.
 - **Files:** everything sits in RDB archives (`asset/*.rdb` index; `asset/*.rdb.bin*` and `asset/data/*.file` hold `IDRK` entries, zlib in 16 KB chunks) ([01](agents/01-extract.md)).
 - **Shaders:** 40,726 GLSLC outputs: KTGL's G2S containers and one `_DOK` container in `system.rdb.bin*`, plus 117 in `main`. Many have 0x850-byte controls and the compute ones no code header ([04](agents/04-graphics.md)). The game builds 8,705 programs during its first frame (about 10 s on the Mac).
@@ -509,7 +523,7 @@ Record on the game version you ship. At launch the log names each list it read a
 - **Other games' saves:** it asks whether Breath of the Wild's (and `0100A2C01320E000`'s) save exists for bonus items; the host says no.
 - **Mac input:** with a save whose first-boot settings were made, `DM_KEYS="f300:A,f420:A,f540:A,f660:A,f780:A,f900:A,f1300:Plus,f1350:Plus"` confirms the settings, skips the intro movie and plays the opening into the first battle, The Battle of Hyrule Field (about frame 4000).
 
-**Fire Emblem: Three Houses (`010055D009F78000`), being ported**
+**Fire Emblem: Three Houses (`010055D009F78000`)**
 - **Engine:** Koei Tecmo's older KTGL (the game is co-developed with Intelligent Systems), SDK 6.5.0 (the oldest so far), update 1.2.0. Modules main + subsdk0 (GLSLC, NVN's runtime shader compiler) + subsdk1 (movie) + sdk. RomFS: the LINKDATA archive (`DATA0.bin` is the index, `DATA1.bin` holds 6.9 GB), loose overrides in `patch1`–`patch4`, WebM movies and KTSL sound banks; compressed entries and `*.gz` files are Koei Tecmo's chunked zlib ([01](agents/01-extract.md)).
 - **Shaders:** 1,364. `shader_split.py` reads the SPKG packages (G2S containers, as in Age of Calamity) in `DATA1.bin` and `patch*/nx/shader`, a `_SPK4100` post-effect package, and the BNSH and GLSLC outputs in `main`. SDK 6's GLSLC writes 0x848 / 0x850-byte control sections and compute code with no header, which the reader used to drop ([04](agents/04-graphics.md)).
 - **Shaders compiled at run time:** KTGL compiles 9 built-in GLSL shaders at boot with the game's own GLSLC (2D primitives, text, the loading quill). No game file holds their output, so they are captured on the Mac. The game runs with `DM_GLSLC_CAPTURE=<version dir>/glslc_capture` (`hle_glslc.c`), and the profile key `shader_glslc_capture on` makes `shader_split.py` read that folder. The outputs are identical on every run. The NSP script does this by itself in its `GLSLC capture` stage, so the NSPs and prod.keys are enough. The stage builds the Mac host into `<id>_build/tools/` and boots the game until the 9 files are in `<id>_build/extract/v327680/glslc_capture`, which takes about 10 s in all. Without the folder the split tables would differ from the profile, and the script would stop at its table check. By hand, run the game for a few seconds with that variable (step 5 of the build by hand).
@@ -522,6 +536,7 @@ Record on the game version you ship. At launch the log names each list it read a
   - its character shaders read Half2 UVs through integer-declared inputs, now converted to float32 bits at replay (black silhouettes, then flat tan characters);
   - depth clamp is replayed.
 - **Fixed:** the ground under close-up battle cameras showed as flat blue. The terrain's signed 16-bit heights were read zero-extended, so the vertices with negative heights went out of view ([04](agents/04-graphics.md), Three Houses).
+- **Fixed:** the first loading screen took 78 s on the iPhone. The loader calls `nvnQueueFinish` after each resource it uploads, and that call waited for the display to take every queued frame; it now waits only for the GPU ([04](agents/04-graphics.md), Three Houses).
 - **Open:** 64-pixel rectangles in the ground where decals land. One red line per run says a texture buffer is bound where a shader samples 2D: the decal and light lists.
 - **Memory:** about 3.5 GB resident and 2.8 GB of Metal allocations on the Mac; the game itself makes a 1.5 GB GPU-only memory pool.
 - **Frame rate:** 30 fps, as on the Switch.
