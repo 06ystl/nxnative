@@ -11,6 +11,10 @@
 // Command list format (SDK 16): header +0x04 command count, +0x08 mix buffer address, +0x10 buffer count, +0x14 samples per frame, +0x18 sample rate, commands from +0x20;
 //   each command +0x00 magic 0xcafebabe, +0x04 enabled, +0x05 command ID (DeviceSink = 0x13), +0x06 size; DeviceSink +0x128 upsampler buffer, +0x130 input count, +0x134 input indices (s16).
 #include "hle.h"
+#include <TargetConditionals.h>
+#if TARGET_OS_OSX
+#include "audio_footsteps_mac.h"
+#endif
 #include <math.h>
 #include <stdatomic.h>
 #include <time.h>
@@ -223,6 +227,10 @@ static int capture(const uint8_t *cl, size_t len, int16_t *dst) {
                 int32_t v = st[s]; v = v > 32767 ? 32767 : v < -32768 ? -32768 : v;
                 dst[s] = (int16_t)v; loud |= (uint64_t)v;
             }
+
+#if TARGET_OS_OSX
+            dm_footsteps_render(nout, 48000);
+#endif
             atomic_fetch_add(&g_frames, 1); if (loud) atomic_fetch_add(&g_nonsilent, 1);
             uint64_t f = atomic_load(&g_frames); if (f == 200 || f % 12000 == 0) LOG("audren：已渲 %llu 帧，其中有声 %llu 帧", (unsigned long long)f, (unsigned long long)atomic_load(&g_nonsilent));
             return (int)nout;

@@ -99,21 +99,21 @@ run-mac-input: $(B)/t_padmap $(B)/t_gamepad_mac $(B)/t_hid_axes_script $(B)/t_ru
 
 $(B)/t_padmap: t_padmap.c ../dm_padmap.h ../dm_input.h | $(B)
 	clang -O1 -Wall -Werror -o $@ t_padmap.c
-$(B)/t_gamepad_mac: t_gamepad_mac.m ../gamepad_mac.m ../gamepad_mac.h ../motion_controller_mac.m ../motion_controller_mac.h ../motion_filter_mac.h ../rumble_mac.m ../adaptive_trigger_mac.m ../adaptive_trigger_mac.h ../rumble_mac.h ../input_focus_mac.m ../input_focus_mac.h ../dm_padmap.h ../dm_input.h ../hle_hid.c ../hle.h ../dm.h ../hle_touch.c hid_test_clock.c ../bow_state_mac.h ../shield_state_mac.h $(GAME_H) | $(B)
-	clang -O1 -Wall -Werror -Wno-unused-function -fobjc-arc $(GINC) -I.. -o $@ ../hle_touch.c hid_test_clock.c t_gamepad_mac.m ../rumble_mac.m ../adaptive_trigger_mac.m ../motion_controller_mac.m -framework Cocoa -framework GameController -framework CoreHaptics
+$(B)/t_gamepad_mac: t_gamepad_mac.m ../gamepad_mac.m ../gamepad_mac.h ../motion_controller_mac.m ../motion_controller_mac.h ../motion_filter_mac.h ../rumble_mac.m ../adaptive_trigger_mac.m ../adaptive_trigger_mac.h ../rumble_mac.h ../input_focus_mac.m ../input_focus_mac.h ../dm_padmap.h ../dm_input.h ../hle_hid.c ../hle.h ../dm.h ../hle_touch.c hid_test_clock.c audio_haptics_stub.c ../audio_footsteps_mac.h ../audio_haptics_usb_mac.h ../bow_state_mac.h ../shield_state_mac.h $(GAME_H) | $(B)
+	clang -O1 -Wall -Werror -Wno-unused-function -fobjc-arc $(GINC) -I.. -o $@ ../hle_touch.c hid_test_clock.c audio_haptics_stub.c t_gamepad_mac.m ../rumble_mac.m ../adaptive_trigger_mac.m ../motion_controller_mac.m -framework Cocoa -framework GameController -framework CoreHaptics
 $(B)/t_hid_axes_script: t_hid_axes_script.c ../hle_hid.c ../hle.h ../dm.h ../dm_input.h ../hle_touch.c hid_test_clock.c | $(B)
-	clang -O1 -Wall -Werror -Wno-unused-function $(GINC) -I.. -o $@ ../hle_touch.c hid_test_clock.c t_hid_axes_script.c
-$(B)/t_rumble_mac: t_rumble_mac.m ../rumble_mac.m ../adaptive_trigger_mac.m ../adaptive_trigger_mac.h ../rumble_mac.h ../hle_hid.c ../hle.h ../dm.h ../dm_input.h ../hle_touch.c hid_test_clock.c ../bow_state_mac.h ../shield_state_mac.h $(GAME_H) | $(B)
-	clang -O1 -Wall -Werror -Wno-unused-function -fobjc-arc $(GINC) -I.. -o $@ ../hle_touch.c hid_test_clock.c t_rumble_mac.m ../adaptive_trigger_mac.m -framework Foundation -framework GameController -framework CoreHaptics
+	clang -O1 -Wall -Werror -Wno-unused-function $(GINC) -I.. -o $@ ../hle_touch.c hid_test_clock.c audio_haptics_stub.c t_hid_axes_script.c
+$(B)/t_rumble_mac: t_rumble_mac.m ../rumble_mac.m ../adaptive_trigger_mac.m ../adaptive_trigger_mac.h ../rumble_mac.h ../hle_hid.c ../hle.h ../dm.h ../dm_input.h ../hle_touch.c hid_test_clock.c audio_haptics_stub.c ../audio_footsteps_mac.h ../audio_haptics_usb_mac.h ../bow_state_mac.h ../shield_state_mac.h $(GAME_H) | $(B)
+	clang -O1 -Wall -Werror -Wno-unused-function -fobjc-arc $(GINC) -I.. -o $@ ../hle_touch.c hid_test_clock.c audio_haptics_stub.c t_rumble_mac.m ../adaptive_trigger_mac.m -framework Foundation -framework GameController -framework CoreHaptics
 $(B)/t_motion_dsu: t_motion_dsu.c ../motion_dsu_mac.c ../motion_dsu_mac.h ../motion_filter_mac.h ../hle_hid.c ../hle.h ../dm.h ../dm_input.h ../hle_touch.c hid_test_clock.c | $(B)
-	clang -O2 -Wall -Wextra -Werror -Wno-unused-function -Wno-missing-field-initializers $(GINC) -I.. -o $@ ../hle_touch.c hid_test_clock.c t_motion_dsu.c
+	clang -O2 -Wall -Wextra -Werror -Wno-unused-function -Wno-missing-field-initializers $(GINC) -I.. -o $@ ../hle_touch.c hid_test_clock.c audio_haptics_stub.c t_motion_dsu.c
 $(B)/t_resolution_mac: t_resolution_mac.c ../resolution_mac.c ../resolution_mac.h ../dm.h ../gen/$(GAME)/game_profile.h | $(B)
 	clang -O2 -Wall -Werror $(GINC) -I.. -o $@ t_resolution_mac.c
 $(B)/t_timing_mac: t_timing_mac.c ../timing_mac.c ../timing_mac.h ../dm.h ../gen/$(GAME)/game_profile.h | $(B)
 	clang -O2 -Wall -Wextra -Werror -Wno-unused-function $(GINC) -I.. -o $@ t_timing_mac.c
 
-$(B)/t_motion_mac: t_motion_mac.m ../motion_controller_mac.m ../motion_controller_mac.h ../motion_filter_mac.h ../motion_mac.m ../motion_dsu_mac.c ../motion_dsu_mac.h ../gamepad_mac.m ../rumble_mac.m ../adaptive_trigger_mac.m ../adaptive_trigger_mac.h ../hle_hid.c ../dm_input.h ../hle_touch.c hid_test_clock.c ../bow_state_mac.h ../shield_state_mac.h $(GAME_H) | $(B)
-	clang -O1 -Wall -Werror -Wno-unused-function -fobjc-arc $(GINC) -I.. -o $@ ../hle_touch.c hid_test_clock.c t_motion_mac.m ../rumble_mac.m ../adaptive_trigger_mac.m -framework Cocoa -framework GameController -framework CoreHaptics
+$(B)/t_motion_mac: t_motion_mac.m ../motion_controller_mac.m ../motion_controller_mac.h ../motion_filter_mac.h ../motion_mac.m ../motion_dsu_mac.c ../motion_dsu_mac.h ../gamepad_mac.m ../rumble_mac.m ../adaptive_trigger_mac.m ../adaptive_trigger_mac.h ../hle_hid.c ../dm_input.h ../hle_touch.c hid_test_clock.c audio_haptics_stub.c ../audio_footsteps_mac.h ../audio_haptics_usb_mac.h ../bow_state_mac.h ../shield_state_mac.h $(GAME_H) | $(B)
+	clang -O1 -Wall -Werror -Wno-unused-function -fobjc-arc $(GINC) -I.. -o $@ ../hle_touch.c hid_test_clock.c audio_haptics_stub.c t_motion_mac.m ../rumble_mac.m ../adaptive_trigger_mac.m -framework Cocoa -framework GameController -framework CoreHaptics
 
 # Adaptive-trigger tests never open or command a physical controller.
 run-mac-bow: $(B)/t_bow_state_mac $(B)/t_shield_state_mac $(B)/t_adaptive_trigger_mac
@@ -132,3 +132,16 @@ run: run-mac-bow
 
 $(B)/t_shield_state_mac: t_shield_state_mac.c ../shield_state_mac.c ../shield_state_mac.h ../dm.h $(GAME_H) | $(B)
 	clang -O2 -Wall -Wextra -Werror $(GINC) -I.. -o $@ t_shield_state_mac.c ../shield_state_mac.c
+
+run-audio-haptics: $(B)/t_audio_wave $(B)/t_audio_footsteps $(B)/t_audio_haptics_usb
+	$(B)/t_audio_wave
+	$(B)/t_audio_footsteps
+	$(B)/t_audio_haptics_usb
+$(B)/t_audio_wave: t_audio_wave.c audio_wave_fixture.h ../audio_wave.c ../audio_wave.h | $(B)
+	clang -O2 -Wall -Wextra -Werror -o $@ t_audio_wave.c ../audio_wave.c
+$(B)/t_audio_footsteps: t_audio_footsteps.c audio_wave_fixture.h ../audio_footsteps_mac.c ../audio_footsteps_mac.h ../audio_wave.c ../audio_wave.h $(GAME_H) | $(B)
+	clang -O2 -Wall -Wextra -Werror $(GINC) -o $@ t_audio_footsteps.c ../audio_wave.c
+$(B)/t_audio_haptics_usb: t_audio_haptics_usb.c ../audio_haptics_usb_mac.c ../audio_haptics_usb_mac.h | $(B)
+	clang -O2 -Wall -Wextra -Werror -o $@ t_audio_haptics_usb.c -framework CoreFoundation -framework AudioToolbox -framework CoreAudio -framework IOKit
+run: run-audio-haptics
+.PHONY: run-audio-haptics

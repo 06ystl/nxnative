@@ -96,3 +96,11 @@ def frame_step(ctx):
     fs_put(0x126686c, [B(0x126686c, start)], 'scale apply block taken every frame when the host render scale is not 1.0')
 
 FRAME_STEP = {'cd57b23fa4bbad65803d9788c01821ee': frame_step}
+
+# Read-only observation after the footstep sound event has been created.
+# x19: collision metadata (origin actor +0xb8), x20: event handle.
+OBS = {
+  "cd57b23fa4bbad65803d9788c01821ee": [
+    (0x11f6b4c, 22, "aa1403e0", "player footstep sound event; preserve game sound and timing"),
+  ],
+}

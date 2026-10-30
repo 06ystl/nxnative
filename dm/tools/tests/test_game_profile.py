@@ -134,5 +134,26 @@ class MacShieldProfileTests(unittest.TestCase):
                 self.assertIn('#define DM_GAME_MAC_SHIELD_STATE {0}', game.header(profile))
 
 
+class MacAudioFootstepProfileTests(unittest.TestCase):
+    def test_layout_requires_verified_build_and_valid_registers(self):
+        profile = game.load('01007EF00011E000')
+        row = profile.values('mac_audio_footsteps')[0]
+        self.assertIn('DM_GAME_MAC_AUDIO_FOOTSTEPS', game.header(profile))
+        for field, value in [(0, '0'*32), (1, ''), (1, 'A'*64), (2, '-1'), (6, '256'), (8, '31'), (9, '32'), (17, '5')]:
+            with self.subTest(field=field):
+                candidate = copy.deepcopy(profile)
+                bad = row.copy(); bad[field] = value
+                candidate.rows = [(k,v) for k,v in candidate.rows if k != 'mac_audio_footsteps']
+                candidate.rows.append(('mac_audio_footsteps', bad))
+                with self.assertRaises(ValueError): game.header(candidate)
+        profile.rows.append(('mac_audio_footsteps', row.copy()))
+        with self.assertRaisesRegex(ValueError, 'duplicate'): game.header(profile)
+
+    def test_other_games_have_no_fixed_footstep_addresses(self):
+        for profile in game.all_games():
+            if not profile.values('mac_audio_footsteps'):
+                self.assertIn('#define DM_GAME_MAC_AUDIO_FOOTSTEPS {0}', game.header(profile))
+
+
 if __name__ == '__main__':
     unittest.main()

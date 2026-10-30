@@ -284,7 +284,23 @@ static void test_shared_and_errors(void) {
     send_value(1,1,1,160,320);tick(now+10000000);
     CHECK(p.haptics.engines.count==1,"shutdown cannot restart feedback");
 }
+extern int test_audio_ready,test_audio_active,test_foot_active,test_audio_closed;
+static void test_audio_ownership(void) {
+    RumblePad *p=pad(1);attach(p);dm_rumble_mac_set_active(1);
+    send_value(0,.5f,0,160,320);uint64_t now=clock_gettime_nsec_np(CLOCK_MONOTONIC);tick(now);
+    RumbleEngine *old=p.haptics.engines.lastObject;
+    rumble_sync(^{g_audio_haptics=1;test_audio_ready=1;rumble_accept();});
+    CHECK(old.stops>0&&!g_rumble_accepting,"audio ownership stops ordinary grip engines");
+    CHECK(test_audio_active&&test_foot_active,"eligible USB enables footstep producer and output");
+    NSUInteger count=p.haptics.engines.count;send_value(0,1,1,160,320);tick(now+10000000);
+    CHECK(p.haptics.engines.count==count,"game rumble cannot overwrite USB audio mode");
+    dm_rumble_mac_set_active(0);CHECK(!test_audio_active&&!test_foot_active,"hide/session pause clears both audio sides");
+    dm_rumble_mac_set_active(1);CHECK(test_audio_active&&test_foot_active,"eligible resume restores audio path");
+    rumble_sync(^{test_audio_ready=0;});tick(now+20000000);
+    CHECK(!g_audio_haptics&&g_rumble_accepting&&!test_foot_active,"USB loss returns to ordinary game rumble");
+    CHECK(test_audio_closed>0,"lost stream disposed");attach(nil);
+}
 int main(void) { @autoreleasepool {
-    test_gain_config();test_hid();test_concurrent_publication();test_split();test_xbox_response();test_output_gain();test_shared_and_errors();
+    test_gain_config();test_hid();test_concurrent_publication();test_split();test_xbox_response();test_output_gain();test_audio_ownership();test_shared_and_errors();
     printf("RUMBLE_MAC checks=%d failed=%d\n",checks,failed);return failed!=0;
 } }

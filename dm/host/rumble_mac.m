@@ -15,6 +15,8 @@
 #include "dm_input.h"
 #include "rumble_mac.h"
 #include "adaptive_trigger_mac.h"
+#include "audio_footsteps_mac.h"
+#include "audio_haptics_usb_mac.h"
 
 enum { RUMBLE_TICK_MS = 10, RUMBLE_EVENT_S = 30, RUMBLE_RENEW_S = 25, RUMBLE_RETRY_S = 5 };
 static dispatch_queue_t g_rumble_queue;
@@ -29,6 +31,22 @@ static CHHapticPattern *g_rumble_pattern;
 static uint64_t g_rumble_retry[2], g_rumble_started[2];
 static float g_rumble_intensity[2] = {-1,-1}, g_rumble_sharpness[2] = {-1,-1};
 static float g_rumble_gain = 1;
+static int g_audio_haptics;
+static uint64_t g_audio_retry;
+static void audio_submit(const float *pcm, unsigned frames) { dm_haptic_usb_enqueue(pcm, frames); }
+static void audio_close(void) {
+    dm_footsteps_set_active(0);
+    if (g_audio_haptics) dm_haptic_usb_close();
+    g_audio_haptics = 0;
+}
+static void audio_open(void) { // rumble queue; only the selected, unique DualSense
+    if (!dm_footsteps_configured() || ![g_rumble_controller.extendedGamepad isKindOfClass:GCDualSenseGamepad.class]) return;
+    unsigned count = 0;
+    for (GCController *c in GCController.controllers) if ([c.extendedGamepad isKindOfClass:GCDualSenseGamepad.class]) count++;
+    if (count != 1) return;
+    g_audio_haptics = dm_haptic_usb_open();
+    fprintf(stderr,"[dm] Audio haptics: %s%s\n",dm_haptic_usb_status(),g_audio_haptics ? "" : "; using game rumble");
+}
 static pthread_mutex_t g_rumble_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_rumble_accepting;
 static dm_vibration_value g_rumble_want[2] = {{0,160,0,320}, {0,160,0,320}};
@@ -160,7 +178,12 @@ static void rumble_play(unsigned side, dm_vibration_value value, uint64_t now) {
 static void rumble_accept(void);
 static void rumble_tick(uint64_t now) { // rumble queue
     dm_adaptive_trigger_tick(now);
-    if (!g_rumble_active || g_rumble_closed || !g_rumble_haptics) return;
+    if (g_audio_haptics && !dm_haptic_usb_ready()) {
+        audio_close(); g_audio_retry = now + RUMBLE_RETRY_S * 1000000000ull;
+        fprintf(stderr,"[dm] Audio haptics: USB disconnected; using game rumble\n");
+        rumble_accept();
+    }
+    if (!g_rumble_active || g_rumble_closed || g_audio_haptics || !g_rumble_haptics) return;
     dm_vibration_value values[2];
     pthread_mutex_lock(&g_rumble_mu); memcpy(values,g_rumble_want,sizeof values); pthread_mutex_unlock(&g_rumble_mu);
     if (g_rumble_split) { rumble_play(0,values[0],now); rumble_play(1,values[1],now); }
@@ -172,7 +195,18 @@ static void rumble_tick(uint64_t now) { // rumble queue
     }
 }
 static void rumble_accept(void) { // rumble queue
-    int on = g_rumble_active && !g_rumble_closed && g_rumble_haptics != nil;
+    int eligible = g_rumble_active && !g_rumble_closed;
+    // Stop ordinary engines before restoring the device audio mode.
+    if (eligible && !g_audio_haptics && dm_footsteps_configured() &&
+        [g_rumble_controller.extendedGamepad isKindOfClass:GCDualSenseGamepad.class] &&
+        clock_gettime_nsec_np(CLOCK_MONOTONIC) >= g_audio_retry) {
+        for (unsigned s = 0; s < 2; s++) rumble_retire(s);
+        audio_open();
+        g_audio_retry = clock_gettime_nsec_np(CLOCK_MONOTONIC) + RUMBLE_RETRY_S * 1000000000ull;
+    }
+    dm_haptic_usb_set_active(eligible && g_audio_haptics);
+    dm_footsteps_set_active(eligible && g_audio_haptics);
+    int on = eligible && !g_audio_haptics && g_rumble_haptics != nil;
     pthread_mutex_lock(&g_rumble_mu); g_rumble_accepting = on; if (!on) rumble_clear_want(); pthread_mutex_unlock(&g_rumble_mu);
     if (!on) for (unsigned s = 0; s < 2; s++) rumble_retire(s);
     int tick = g_rumble_active && !g_rumble_closed && (g_rumble_haptics || dm_adaptive_trigger_available());
@@ -183,6 +217,15 @@ void dm_rumble_mac_start(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         g_rumble_gain = rumble_read_gain();
+        dm_footsteps_submit = audio_submit;
+        const char *text = getenv("DM_AUDIO_HAPTICS_GAIN");
+        float gain = .3f; char *end = NULL;
+        if (text) {
+            float value = strtof(text, &end);
+            if (end != text && !*end && isfinite(value) && value >= 0 && value <= 2) gain = value;
+            else fprintf(stderr,"【红】DM_AUDIO_HAPTICS_GAIN must be between 0 and 2; using 0.3\n");
+        }
+        dm_haptic_usb_set_gain(gain);
         g_rumble_queue = dispatch_queue_create("dm.controller.rumble", DISPATCH_QUEUE_SERIAL);
         dispatch_queue_set_specific(g_rumble_queue,&g_rumble_queue_key,&g_rumble_queue_key,NULL);
 #ifndef DM_RUMBLE_TEST
@@ -203,6 +246,7 @@ void dm_rumble_mac_attach(GCController *controller) {
     rumble_sync(^{
         dm_adaptive_trigger_attach(controller);
         if (g_rumble_controller == controller && g_rumble_haptics == haptics) { rumble_accept(); return; }
+        audio_close(); g_audio_retry = 0;
         for (unsigned s = 0; s < 2; s++) { rumble_retire(s); g_rumble_retry[s] = 0; }
         pthread_mutex_lock(&g_rumble_mu); rumble_clear_want(); pthread_mutex_unlock(&g_rumble_mu);
         g_rumble_controller = controller; g_rumble_haptics = haptics;
@@ -221,6 +265,7 @@ void dm_rumble_mac_shutdown(void) {
     if (!g_rumble_queue) return;
     rumble_sync(^{
         dm_adaptive_trigger_shutdown();
+        audio_close();
         g_rumble_closed = 1; rumble_accept();
         g_rumble_haptics = nil; g_rumble_controller = nil;
     });

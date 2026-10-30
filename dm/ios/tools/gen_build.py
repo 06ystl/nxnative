@@ -39,4 +39,5 @@ for s in srcs:
     os.symlink(s, f'{gen}/src/{flat}')
 print('HEADER_SEARCH_PATHS = $(inherited) ' + ' '.join(f'"{d}"' for d in incs + dirs))
 print('OTHER_CFLAGS = $(inherited) ' + ' '.join(defs))
-print('DM_FRAMEWORKS = ' + ' '.join(f'-framework {f}' for f in fws if f != 'Cocoa'))
+# CoreAudio HAL and IOKit belong to the Mac-only USB haptics backend.
+print('DM_FRAMEWORKS = ' + ' '.join(f'-framework {f}' for f in fws if f not in ('Cocoa', 'CoreAudio', 'IOKit')))

@@ -186,6 +186,8 @@ or shell quotes. The settings below remain supported:
 | `DM_WINDOW`, `DM_AUDIO` | Native window and audio output; the packaged Mac app supplies both automatically. `dmhost` diagnostics opt in with `1`; `DM_AUDIO=0` selects the silent sink |
 | `DM_GAME_RES` | BotW 1.9.0 Mac: `1280x720` or `1920x1080`, including the scene, HUD and output. Unset retains native mode-dependent sizes. The local 1080p app bundles `1920x1080`; a user setting overrides it. D2R retains its existing KRES size parameters |
 | `DM_RUMBLE_GAIN` | Mac controller output multiplier, any finite nonnegative value, default `1`. `3` strengthens weak effects; `20` brings weaker waveform segments up to full API intensity; `0` mutes. Output remains in the system's 0–1 range. Applies after the Xbox response; restart after changing |
+| `DM_AUDIO_HAPTICS` | Mac: `1` enables original player-footstep audio on one USB DualSense for a verified game build. Default off. Replaces that controller’s ordinary grip rumble; adaptive triggers remain enabled. Unavailable USB falls back to game rumble. Restart after changing |
+| `DM_AUDIO_HAPTICS_GAIN` | Audio-haptics gain, default `0.3`, range `0`–`2`; independent of `DM_RUMBLE_GAIN`. Output peaks are clamped to ±0.5. Restart after changing |
 | `DM_MOTION_SOURCE` | Mac gyro source: unset, empty or `controller` uses the current 1P controller; `phone` enables the phone connection menu and saved DSU connection. Restart after changing. Sources never fall back to each other |
 | `DM_CHEATS` | BotW 1.9.0 Mac only: comma-separated `health`, `stamina`, `durability`, `arrows`; unset, empty or `none` disables all. Restart after changing. Durability refills can persist in saves |
 
@@ -504,6 +506,38 @@ actual blocked explosion, menu freezing, unequipping, bow aiming and two-handed
 lock-on. Production output is tested through fake native endpoints, with no
 physical effects sent automatically. Shield resistance and impact feel require
 the user's manual controller test.
+
+### Mac footstep audio haptics
+
+`audio_footsteps_mac.c` observes the verified player's footstep event through
+`OBS_PLAYER_FOOTSTEP`. It checks actor identity, gameplay state, object generations
+and the resource-name prefix, then follows each activated sound to its selected
+FWAV recording. Delayed child sounds are polled until activation. NPCs can reuse
+player-named recordings, so asset names alone are insufficient to select a voice.
+No guest audio buffers or timing values are modified.
+
+`audio_wave.c` decodes a copy of mono, nonlooping PCM8/PCM16/DSP-ADPCM FWAV data.
+The serialized AudioRenderer output path advances this independent stream at
+48 kHz. This replays original selected recordings, including delayed heel/toe
+sounds; it does not reproduce the audible voice's pitch, gain or DSP processing.
+There are no material-specific synthetic effects. Mono recordings reach both
+actuators; gain and a final peak clamp are applied by the USB backend.
+
+`audio_haptics_usb_mac.c` opens exactly one four-channel USB DualSense output
+without changing the default audio device. Channels 1/2 are silent; channels 3/4
+are left/right actuator PCM. A bounded producer queue feeds a callback that does
+not allocate, log or acquire locks. Underruns fade out. The controller feedback
+queue retires ordinary Core Haptics engines before restoring USB audio-haptics
+mode. Adaptive trigger sampling continues. USB loss restores ordinary rumble;
+ineligibility flushes queued audio and invalidates observed events. Menus and
+player teardown discard outstanding recordings. No source tap is enabled on an
+unknown main build or without the rewritten observation gate.
+
+Run `make -C dm/host/tests GAME=01007EF00011E000 run-audio-haptics run-mac-bow`
+and the Mac input tests. They use synthetic guest objects and fake endpoints;
+physical effect tests are initiated manually. Original Stone and Grass recordings
+were confirmed distinguishable on USB, with correct left/right actuators. The
+integrated game and simultaneous adaptive-trigger feel require manual acceptance.
 
 ### Mac controller motion
 

@@ -618,7 +618,7 @@ def derive_profile(g, pdir, ver, d, mods):
         cells = line.split(T)
         # Fixed Mac addresses are valid only for the main build they describe.
         # A derived version keeps general settings, not another build's adapters.
-        if cells[0] in ('mac_resolution_patch', 'mac_cheat_patch', 'mac_frame_step', 'mac_frame_guard', 'mac_bow_state', 'mac_shield_state'):
+        if cells[0] in ('mac_resolution_patch', 'mac_cheat_patch', 'mac_frame_step', 'mac_frame_guard', 'mac_bow_state', 'mac_shield_state', 'mac_audio_footsteps'):
             if len(cells) < 2 or cells[1] != module_builds.get('main'): continue
         if line.split(T, 1)[0] in ('build', 'package', 'shader_versions'):
             if not put: out += [row, f'package{T}{ver}', f'shader_versions{T}{ver}']; put = True
