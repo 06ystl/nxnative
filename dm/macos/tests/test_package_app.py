@@ -7,11 +7,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
-from package_app import PackageError, build_app, shader_inventory
+from package_app import PackageError, build_app, shader_inventory, validate_shader_inputs, dmsh_chain
 
 
 class Profile:
     id = 'fixture'
+    rows = []
 
     def __init__(self, folder): self.folder = folder
     def table(self, name): return self.folder / name
@@ -55,15 +56,32 @@ class PackagingTests(unittest.TestCase):
         with self.assertRaisesRegex(PackageError, 'reflection'):
             shader_inventory(self.msl, 'fixture')
 
+    def test_profile_and_tables_must_match_the_shader_inputs(self):
+        profile = Profile(self.root)
+        dmsh_chain.write_stamp(self.libs, profile.id, dmsh_chain.inputs(profile))
+        for name in ('c1_full.tsv', 'cb_extent.tsv'):
+            profile.table(name).write_text(dmsh_chain.table_head(self.libs) + ' 2026-10-24T00:00:00+08:00\n')
+        validate_shader_inputs(self.msl, 'fixture', profile)
+        profile.table('cb_extent.tsv').write_text('# previous shader inputs\n')
+        with self.assertRaisesRegex(PackageError, 'does not name the shader library inputs'):
+            validate_shader_inputs(self.msl, 'fixture', profile)
+        dmsh_chain.write_stamp(self.libs, 'another-game', dmsh_chain.inputs(profile))
+        with self.assertRaisesRegex(PackageError, 'do not match game profile'):
+            validate_shader_inputs(self.msl, 'fixture', profile)
+
     def test_signature_failure_keeps_previous_app_and_removes_staging(self):
         repo = self.root / 'repo'; (repo / 'dm/host').mkdir(parents=True)
         (repo / 'dm/host/dmhost_app').write_bytes(b'fixture host')
         profile = Profile(self.root)
-        (self.root / 'dmsh_chain.h').write_text('#define DMSH_CHAIN "fixture"\n')
+        (repo / 'dm/gfx/nvn').mkdir(parents=True)
+        (repo / 'dm/gfx/nvn/dmsh_chain.h').write_text('#define DMSH_CHAIN "fixture"\n')
         for name in ('shader_map.tsv', 'c1_full.tsv', 'pso_manifest.tsv'):
             (self.root / name).write_text('# fixture\n')
+        dmsh_chain.write_stamp(self.libs, profile.id, dmsh_chain.inputs(profile))
+        for name in ('c1_full.tsv', 'cb_extent.tsv'):
+            profile.table(name).write_text(dmsh_chain.table_head(self.libs) + ' 2026-10-24T00:00:00+08:00\n')
         patched = self.root / 'patched'; patched.mkdir()
-        for suffix in ('patched.bin', 'fixups.tsv', 'gates.tsv', 'params.tsv', 'cuts.tsv', 'obs.tsv'):
+        for suffix in ('patched.bin', 'fixups.tsv', 'gates.tsv', 'cuts.tsv', 'obs.tsv'):
             (patched / f'main.{suffix}').write_text('fixture')
         romfs = self.root / 'RomFS'; romfs.mkdir()
         (romfs / 'resource').write_text('fixture resource')

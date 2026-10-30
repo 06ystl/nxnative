@@ -1,7 +1,6 @@
 // Shared encoding helpers. Included after the renderer's device/queue globals.
 // Metal 4 stays on its existing path; older systems use tracked Metal 3 resources.
 #import "nvn_legacy.h"
-static int g_metal4;
 
 static id backend_arguments(NSUInteger buffers, NSUInteger textures, NSUInteger samplers) {
     if (@available(iOS 26.0, macOS 26.0, *)) { if (g_metal4) {
@@ -13,6 +12,7 @@ static id backend_arguments(NSUInteger buffers, NSUInteger textures, NSUInteger 
     } }
     return [NvLegacyArguments new];
 }
+static id backend_record_arguments(NSUInteger b, NSUInteger t, NSUInteger s) { return rec_table(backend_arguments(b, t, s)); }
 static void backend_texture(id table, id<MTLTexture> texture, NSUInteger index) {
     if (@available(iOS 26.0, macOS 26.0, *)) { if (g_metal4) { [(id<MTL4ArgumentTable>)table setTexture:texture.gpuResourceID atIndex:index]; return; } }
     [(NvLegacyArguments *)table setTextureObject:texture atIndex:index];
@@ -51,14 +51,18 @@ static void backend_barrier(id encoder) {
 @property(readonly) CFTimeInterval GPUStartTime;
 @property(readonly) CFTimeInterval GPUEndTime;
 @end
-static void backend_commit(id cb, NSArray *handlers) {
+static void backend_commit(id cb, NSArray *handlers, int role) {
     if (@available(iOS 26.0, macOS 26.0, *)) { if (g_metal4) {
         MTL4CommitOptions *o = [MTL4CommitOptions new];
         for (void (^handler)(id<NvCommitFeedback>) in handlers)
             [o addFeedbackHandler:^(id<MTL4CommitFeedback> feedback) { handler((id)feedback); }];
-        [cb endCommandBuffer]; id<MTL4CommandBuffer> buffers[] = {cb};
-        [g_q4 commit:buffers count:1 options:o]; return;
+        [cb endCommandBuffer];
+        if (role == 0) rec_commit(cb, o);
+        else if (role == 1) rec_commit_upload(cb, o);
+        else { id<MTL4CommandBuffer> buffers[] = {cb}; [g_q4 commit:buffers count:1 options:o]; }
+        return;
     } }
+    ubc_wait(ubc_head());
     [(id<MTLCommandBuffer>)cb addCompletedHandler:^(id<MTLCommandBuffer> completed) {
         dispatch_async(g_feedback_q, ^{ for (void (^handler)(id<NvCommitFeedback>) in handlers) handler((id)completed); });
     }];

@@ -8,50 +8,50 @@ It is not an emulator: the game's own code runs directly on the Apple chip, with
 
 This project is built on other people's work:
 
-- **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this native-execution approach, for Diablo II: Resurrected. nxnative (first called smbw-mobile) started as a copy of its generic parts: the NSO rewriter, the host that stands in for Horizon, the NVN-on-Metal layer and the iOS app shell. Fixes go both ways.
-- **Ryujinx** (MIT): its shader translator (`Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator` 1.3.2, with local translation fixes in `dm/third_party/ryujinx`) turns the games' Maxwell shaders into SPIR-V. Its emulation of the kernel and system services is also a reference when the host's behaviour is in doubt.
+- **[d2r-mobile](https://github.com/jhaizhou-ops/d2r-mobile)** (MIT) developed this native-execution approach, for Diablo II: Resurrected. nxnative started as a copy of its generic parts: the NSO rewriter, the host that stands in for Horizon, the NVN-on-Metal layer and the iOS app shell. Fixes go both ways.
+- **Ryujinx** (MIT): its shader translator (`Ryujinx.Graphics.Shader`, `Ryujinx.Common` and `Spv.Generator` 1.3.2, in `dm/third_party/ryujinx` with a few fixes listed in [its README](dm/third_party/ryujinx/README.md)) turns the games' Maxwell shaders into SPIR-V. Its emulation of the kernel and system services is also a reference when the host's behaviour is in doubt.
 - **[Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)**: its kernel, mesosphère, is the reference for Horizon's synchronization semantics (address arbiter, condition variables).
 - **yuzu**: Maxwell instruction encodings for the shader reference tool, and a cross-check for kernel behaviour.
 - **[LibHac](https://github.com/Thealexbarney/LibHac)**: reads NSPs and layers updates over the base game in `dm/tools/nx_extract`. **hactool** did the first extractions.
-- **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)**: SPIR-V to Metal Shading Language.
+- **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)**: SPIR-V to Metal Shading Language. **[glslang](https://github.com/KhronosGroup/glslang)** compiles the GLSL of OpenGL games to SPIR-V for it.
 - **deko3d** (zlib): its texture layout size algorithm is ported in `dm/gfx/nvn/nvn_tex.c`.
-- **libvpx** (VP9 movies), **stb_vorbis** (movie sound), **libdeflate**, the **Vulkan headers** and **NVIDIA FLIP** ship in `dm/third_party` with their licenses ([list](dm/third_party/README.md)).
+- **libvpx** (VP9 movies), **stb_vorbis** (movie sound), the **Vulkan headers** and **NVIDIA FLIP** ship in `dm/third_party` with their licenses ([list](dm/third_party/README.md)).
 - **Capstone**, **lz4**, **fontTools** and **XcodeGen** are used by the build.
 
 ## Games
 
-All of these are tested on an iPhone and playable:
+The upstream project reports the following games as tested on an iPhone and playable:
 
-| Game | NSPs to put in the folder | IPA | Notes |
-|---|---|---|---|
-| Super Mario Bros. Wonder | base game + update 1.2.1 | ~4 GB | |
-| Fire Emblem Engage | base game + update 2.0.0 (+ Expansion Pass DLC) | ~15 GB | Upgraded to 60 fps (30 fps on Switch) |
-| Metroid Dread | base game + update 2.1.0 | ~5 GB | |
-| 13 Sentinels: Aegis Rim | base game + update 1.10 | ~5 GB | |
-| Super Mario 3D World + Bowser's Fury | base game + update 1.2.2 | ~3 GB | |
-| The Legend of Zelda: Breath of the Wild | base game + update 1.9.0 (+ DLC) | ~16 GB | Upgraded to 60 fps (30 fps on Switch) |
-| The Legend of Zelda: Link's Awakening | base game + update 1.1.0 | ~6 GB | |
-| Super Mario Odyssey | base game + update 1.4.1 | ~6 GB | |
-| Hades | base game + update 1.0.38233 | ~4 GB | |
-| Hyrule Warriors: Age of Calamity | base game + update 1.3.0 (+ DLC) | ~15 GB | |
-| Fire Emblem: Three Houses | base game + update 1.2.0 (+ DLC) | ~13 GB | While packing, the script starts the game on the Mac for a few seconds to collect the shaders it builds as it runs |
+The tested path needs iOS / iPadOS 26 or later on an iPhone 15 Pro or newer (A17 Pro chip or later) or an iPad with an M1 chip or later: the games' textures are BC-compressed, and older iPhones can't read that format. Other games aren't supported yet. For them the script writes a survey and still tries its best to pack an IPA, guessing the game's settings; such an IPA may not start.
 
-Being ported:
-
-- The Legend of Zelda: Tears of the Kingdom (base game + update 1.4.3): its opening cave renders on the Mac; it doesn't fit in an iPhone's memory yet.
+This branch also retains an experimental iOS 17 / Metal 3 compatibility path. It has not been validated on an iOS 17 device; the upstream game results above do not establish compatibility with that path.
 
 | | |
 |:---:|:---:|
-| ![Super Mario Bros. Wonder](docs/images/super-mario-bros-wonder.jpg)<br>Super Mario Bros. Wonder | ![Fire Emblem Engage](docs/images/fire-emblem-engage.jpg)<br>Fire Emblem Engage |
-| ![Metroid Dread](docs/images/metroid-dread.jpg)<br>Metroid Dread | ![13 Sentinels: Aegis Rim](docs/images/13-sentinels.jpg)<br>13 Sentinels: Aegis Rim |
-| ![Super Mario 3D World + Bowser's Fury](docs/images/super-mario-3d-world.jpg)<br>Super Mario 3D World + Bowser's Fury | ![The Legend of Zelda: Breath of the Wild](docs/images/zelda-breath-of-the-wild.jpg)<br>The Legend of Zelda: Breath of the Wild |
-| ![The Legend of Zelda: Link's Awakening](docs/images/zelda-links-awakening.jpg)<br>The Legend of Zelda: Link's Awakening | ![Super Mario Odyssey](docs/images/super-mario-odyssey.jpg)<br>Super Mario Odyssey |
-| ![Hades](docs/images/hades.jpg)<br>Hades | ![Hyrule Warriors: Age of Calamity](docs/images/hyrule-warriors-age-of-calamity.jpg)<br>Hyrule Warriors: Age of Calamity |
-| ![Fire Emblem: Three Houses](docs/images/fire-emblem-three-houses.jpg)<br>Fire Emblem: Three Houses | |
-
-Builds now target iOS / iPadOS 17 or later, with an experimental Metal 3 compatibility path on older systems. Supported iOS 26+ devices keep Metal 4. The iPhone results above were obtained on the original iOS 26 path; iOS 17 device testing is pending.
-
-Requires an iPhone 15 Pro or newer (A17 Pro chip or later) or an iPad with an M1 chip or later: the games' textures are BC-compressed, and older iPhones can't read that format. Other games aren't supported yet. For them the script writes a survey and still tries its best to pack an IPA, guessing the game's settings; such an IPA may not start.
+| ![Super Mario Bros. Wonder](docs/images/super-mario-bros-wonder.jpg)<br>Super Mario Bros. Wonder<br><sub>IPA ~4 GB</sub> | ![Fire Emblem Engage](docs/images/fire-emblem-engage.jpg)<br>Fire Emblem Engage<br><sub>IPA ~15 GB · 60 fps (30 on Switch) with update 2.0.0</sub> |
+| ![Metroid Dread](docs/images/metroid-dread.jpg)<br>Metroid Dread<br><sub>IPA ~5 GB</sub> | ![13 Sentinels: Aegis Rim](docs/images/13-sentinels.jpg)<br>13 Sentinels: Aegis Rim<br><sub>IPA ~5 GB</sub> |
+| ![Super Mario 3D World + Bowser's Fury](docs/images/super-mario-3d-world.jpg)<br>Super Mario 3D World + Bowser's Fury<br><sub>IPA ~3 GB</sub> | ![The Legend of Zelda: Breath of the Wild](docs/images/zelda-breath-of-the-wild.jpg)<br>The Legend of Zelda: Breath of the Wild<br><sub>IPA ~16 GB · 60 fps (30 on Switch) with update 1.9.0</sub> |
+| ![The Legend of Zelda: Link's Awakening](docs/images/zelda-links-awakening.jpg)<br>The Legend of Zelda: Link's Awakening<br><sub>IPA ~6 GB</sub> | ![Super Mario Odyssey](docs/images/super-mario-odyssey.jpg)<br>Super Mario Odyssey<br><sub>IPA ~6 GB</sub> |
+| ![Hades](docs/images/hades.jpg)<br>Hades<br><sub>IPA ~4 GB</sub> | ![Hyrule Warriors: Age of Calamity](docs/images/hyrule-warriors-age-of-calamity.jpg)<br>Hyrule Warriors: Age of Calamity<br><sub>IPA ~15 GB · 60 fps (30 on Switch) with update 1.3.0</sub> |
+| ![Fire Emblem: Three Houses](docs/images/fire-emblem-three-houses.jpg)<br>Fire Emblem: Three Houses<br><sub>IPA ~13 GB · 60 fps (30 on Switch) with update 1.2.0</sub> | ![Super Mario Galaxy](docs/images/super-mario-galaxy.jpg)<br>Super Mario Galaxy<br><sub>IPA ~3 GB</sub> |
+| ![The Legend of Zelda: Tears of the Kingdom](docs/images/zelda-tears-of-the-kingdom.jpg)<br>The Legend of Zelda: Tears of the Kingdom<br><sub>IPA ~17 GB · 60 fps (30 on Switch) with update 1.4.3</sub> | ![Monster Hunter Rise](docs/images/monster-hunter-rise.jpg)<br>Monster Hunter Rise<br><sub>IPA ~22 GB · 60 fps (30 on Switch) with update 16.0.2</sub> |
+| ![Ace Attorney Investigations Collection](docs/images/ace-attorney-investigations.jpg)<br>Ace Attorney Investigations Collection<br><sub>IPA ~7 GB</sub> | ![Hades II](docs/images/hades-ii.jpg)<br>Hades II<br><sub>IPA ~4 GB</sub> |
+| ![Unicorn Overlord](docs/images/unicorn-overlord.jpg)<br>Unicorn Overlord<br><sub>IPA ~4 GB</sub> | ![Rhythm Heaven Groove](docs/images/rhythm-heaven-groove.jpg)<br>Rhythm Heaven Groove<br><sub>IPA ~3 GB</sub> |
+| ![Octopath Traveler 0](docs/images/octopath-traveler-0.jpg)<br>Octopath Traveler 0<br><sub>IPA ~4 GB · 60 fps (30 on Switch) with update 1.0.5</sub> | ![Pokémon Legends: Z-A](docs/images/pokemon-legends-z-a.jpg)<br>Pokémon Legends: Z-A<br><sub>IPA ~6 GB</sub> |
+| ![Cuphead](docs/images/cuphead.jpg)<br>Cuphead<br><sub>IPA ~5 GB</sub> | ![Super Mario Galaxy 2](docs/images/super-mario-galaxy-2.jpg)<br>Super Mario Galaxy 2<br><sub>IPA ~3 GB</sub> |
+| ![FINAL FANTASY TACTICS - The Ivalice Chronicles](docs/images/final-fantasy-tactics.jpg)<br>FINAL FANTASY TACTICS - The Ivalice Chronicles<br><sub>IPA ~11 GB</sub> | ![Absolum](docs/images/absolum.jpg)<br>Absolum<br><sub>IPA ~2 GB</sub> |
+| ![Captain Toad: Treasure Tracker](docs/images/captain-toad-treasure-tracker.jpg)<br>Captain Toad: Treasure Tracker<br><sub>IPA ~2 GB</sub> | ![Brain Memory Training Academy](docs/images/brain-memory-training-academy.jpg)<br>Brain Memory Training Academy<br><sub>IPA ~0.1 GB</sub> |
+| ![The Great Ace Attorney Chronicles](docs/images/the-great-ace-attorney-chronicles.jpg)<br>The Great Ace Attorney Chronicles<br><sub>IPA ~4 GB</sub> | ![STEINS;GATE RE:BOOT](docs/images/steins-gate-reboot.jpg)<br>STEINS;GATE RE:BOOT<br><sub>IPA ~6 GB</sub> |
+| ![Big Brain Academy: Brain vs. Brain](docs/images/big-brain-academy-brain-vs-brain.jpg)<br>Big Brain Academy: Brain vs. Brain<br><sub>IPA ~0.8 GB</sub> | ![Patrick's Parabox](docs/images/patricks-parabox.jpg)<br>Patrick's Parabox<br><sub>IPA ~0.2 GB</sub> |
+| ![Celeste](docs/images/celeste.jpg)<br>Celeste<br><sub>IPA ~0.9 GB</sub> | ![DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition](docs/images/dragon-quest-xi-s.jpg)<br>DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition<br><sub>IPA ~15 GB · 60 fps (30 on Switch) with update 1.0.4</sub> |
+| ![Monster Train 2](docs/images/monster-train-2.jpg)<br>Monster Train 2<br><sub>IPA ~1.6 GB · 60 fps (30 on Switch) with update 1.1.1</sub> | ![Raging Loop](docs/images/raging-loop.jpg)<br>Raging Loop<br><sub>IPA ~0.9 GB</sub> |
+| ![DARK SOULS: REMASTERED](docs/images/dark-souls-remastered-creation.jpg)<br>DARK SOULS: REMASTERED<br><sub>IPA ~4 GB · 60 fps (30 on Switch) with update 1.0.3</sub> | ![Paper Mario: The Thousand-Year Door](docs/images/paper-mario-the-thousand-year-door.jpg)<br>Paper Mario: The Thousand-Year Door<br><sub>IPA ~5 GB · 60 fps (30 on Switch) with update 1.0.1</sub> |
+| ![Hollow Knight: Silksong](docs/images/hollow-knight-silksong.jpg)<br>Hollow Knight: Silksong<br><sub>IPA ~6.4 GB</sub> | ![Catherine: Full Body](docs/images/catherine-full-body.jpg)<br>Catherine: Full Body<br><sub>IPA ~14 GB</sub> |
+| ![Digimon Story Cyber Sleuth: Complete Edition](docs/images/digimon-story-cyber-sleuth.jpg)<br>Digimon Story Cyber Sleuth: Complete Edition<br><sub>IPA ~5 GB</sub> | ![Animal Crossing: New Horizons](docs/images/animal-crossing-new-horizons.jpg)<br>Animal Crossing: New Horizons<br><sub>IPA ~10.5 GB with update 3.0.3</sub> |
+| ![DRAGON QUEST VII Reimagined](docs/images/dragon-quest-vii-reimagined.jpg)<br>DRAGON QUEST VII Reimagined<br><sub>IPA ~5.9 GB with update 1.2.0</sub> | ![FINAL FANTASY RESONANCE](docs/images/final-fantasy-resonance.jpg)<br>FINAL FANTASY RESONANCE<br><sub>IPA ~10 GB · 60 fps (30 on Switch) with update 1.0.1</sub> |
+| ![Luigi's Mansion 3](docs/images/luigis-mansion-3.jpg)<br>Luigi's Mansion 3<br><sub>IPA ~7.5 GB · 60 fps (30 on Switch) with update 1.4.0</sub> | ![AI: THE SOMNIUM FILES](docs/images/ai-the-somnium-files.jpg)<br>AI: THE SOMNIUM FILES<br><sub>IPA ~8.3 GB</sub> |
+| ![ANIMAL WELL](docs/images/animal-well.png)<br>ANIMAL WELL<br><sub>IPA ~54 MB · update 1.0.10</sub> | ![AI: THE SOMNIUM FILES - nirvanA Initiative](docs/images/ai-the-somnium-files-nirvana-initiative.jpg)<br>AI: THE SOMNIUM FILES - nirvanA Initiative<br><sub>IPA ~11.6 GB · update 1.0.2</sub> |
+| ![Mario Kart 8 Deluxe](docs/images/mario-kart-8-deluxe.jpg)<br>Mario Kart 8 Deluxe<br><sub>IPA ~11.9 GB · update 4.0.0 · Mii heads not drawn (no firmware)</sub> | |
 
 ## Pack an IPA
 
@@ -59,18 +59,20 @@ Requires an iPhone 15 Pro or newer (A17 Pro chip or later) or an iPad with an M1
 
 ```
 git clone https://github.com/seedds/nxnative.git && cd nxnative
-brew install xcodegen zstd spirv-cross
+brew install xcodegen zstd spirv-cross glslang
 brew install --cask dotnet-sdk
-python3 -m pip install lz4 capstone fonttools
+python3 -m pip install lz4 capstone fonttools "backports.zstd; python_version < '3.14'"
 ```
 
-**2. Put one game's NSPs in a folder**, base game and update (and any DLC):
+**2. Put one game's NSPs in a folder**: the base game (an NSP, or an XCI cartridge dump), plus its update and DLC if you have them:
 
 ```
 ~/Games/MarioWonder/
   Super Mario Bros. Wonder [010015100B514000][v0].nsp
   Super Mario Bros. Wonder [010015100B514800][v327680].nsp
 ```
+
+Any version works, with or without an update: the script packs the newest version in the folder. DLC is optional too: the DLC in the folder is packed, and without it the game sees none, as on a Switch without it. Each game was tested on one version (an update named in the table above is the one its 60 fps needs). With another version the script builds the game with that version's own shaders and says that the version was not tested; fixes made for the tested version's code, such as the 60 fps ones, don't apply to it.
 
 **3. Run the script:**
 
@@ -80,7 +82,9 @@ python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys
 
 The IPA appears in the same folder (here `~/Games/MarioWonder/SMBWMobile.ipa`). The first build takes 30–60 minutes, later ones about 10. You need free disk space of about twice the NSPs' size plus 10 GB. Options such as `-o` (output path) and `--app-name` are listed by `-h`.
 
-**4. Install** the IPA with your sideloading tool (AltStore, Sideloadly, LiveContainer, …). The app gets the game's name, icon and version (the update's version, for example 1.2.1 for Mario Wonder; the base game's when there is no update).
+**4. Install** the IPA with your sideloading tool (AltStore, Sideloadly, LiveContainer, …). The app gets the game's name, icon and version (the update's version, for example 1.2.1 for Mario Wonder; the base game's when there is no update). Sign it with the **Increased Memory Limit** capability (`com.apple.developer.kernel.increased-memory-limit`) if your tool can: without it iOS gives the app about 3.4 GB and closes the bigger games (Hyrule Warriors: Age of Calamity and Hades II use more, Breath of the Wild and Cuphead come close); with it a recent iPhone gives about 6 GB.
+
+With an Apple developer account you can instead build and install from Xcode: `--prepare-xcode` makes an Xcode project for the game rather than an IPA ([Build and run on a device with Xcode](docs/development.md#build-and-run-on-a-device-with-xcode)).
 
 ## Build Mac and iOS apps together
 
@@ -120,22 +124,29 @@ Rebuilt Mac apps apply the validated state and buffer caches automatically; Brea
 
 Breath of the Wild 1.9.0 Mac builds support `DM_GAME_RES=1920x1080` for true 1080p scene rendering, HUD and output, or `DM_GAME_RES=1280x720` for 720p. Put the setting in your `env.txt` and restart. Higher resolution uses more GPU time; select the preset that gives you the clarity and frame rate you prefer.
 
+On Mac, Breath of the Wild 1.9.0 also accepts experimental `DM_FPS=90` or `DM_FPS=120` in `env.txt`, followed by a restart. These opt-in modes adapt the game time step to elapsed time and preserve explicit game timing overrides. The default remains 60; the selected value is a ceiling, and actual frame rate depends on the scene, GPU and display. Resolution and effects stay unchanged.
+
 ## Play
 
-**Touch controls.** Tap **2D** / **3D** at the top to switch layouts; the app remembers your choice. 3D World, Breath of the Wild, Odyssey, Hades, Age of Calamity and Three Houses start in 3D, the other games in 2D.
+**Settings.** A screen before the game starts offers what the game supports: frame rate, render scale, docked or handheld mode, game language, the frame-rate counter and Apple's performance HUD. Tap **Play** to start; the app remembers your choices.
+
+**Touch controls.** Tap **2D** / **3D** at the top to switch layouts; the app remembers your choice. Wonder, Engage, Dread, 13 Sentinels, Link's Awakening, Ace Attorney Investigations Collection, Unicorn Overlord, Rhythm Heaven Groove, Octopath Traveler 0, Pokémon Legends: Z-A, Cuphead, Absolum, Brain Memory Training Academy, The Great Ace Attorney Chronicles, STEINS;GATE RE:BOOT, Big Brain Academy: Brain vs. Brain, Patrick's Parabox, Celeste and Raging Loop start in 2D, the other games in 3D (STEINS;GATE RE:BOOT's quick save is R3, in the 3D layout). In 3D, the right stick (the camera in most games) is not drawn: swipe on the right third of the screen, starting anywhere off the buttons. In Super Mario Galaxy and Super Mario Galaxy 2, other touches outside the controls move the pointer; in Captain Toad: Treasure Tracker they touch the game's screen (touch blocks, stun enemies), and in Big Brain Academy: Brain vs. Brain too (its menus and activities).
 A connected game controller hides the touch controls and keeps every button.
 
-- **Game language** is English by default. For Chinese, add the line `DM_LANG=zh-Hans` to `Documents/env.txt`.
+**Shaking.** Shake the iPhone to shake the controller, in games that read its motion: Super Mario Odyssey's motion moves (such as the cap throw on a shake) need it, and Odyssey only takes them in its default docked mode. A light bump does not count; a sharp flick of the phone does.
+
+- **Game language** is English by default. Pick another when packing with `--language` (`-l`), by code or by name: `-l ja`, `-l zh-Hans`, `-l French` (`LANGUAGE` in Spyder). It must be one the game has; the script prints the game's languages and stops on one it lacks. To change it without rebuilding, pick another on the settings screen.
 - **Saves and logs** are in the Files app, under the app's name: `save/` and `log.txt`. When something goes wrong, send `log.txt` (the previous run is `log.prev.txt`).
 - **Short stutters** the first time a new scene appears are normal: the app compiles graphics for it once and remembers them for the next launch.
 - **Reinstalling:** some sideloading tools give a reinstalled app a new data folder. Copy `save/` and `pso_user.tsv` over from the old one to keep your progress.
-- **Settings without rebuilding:** put lines like `DM_OPMODE=0` (handheld mode: lower resolution, higher frame rate) in `Documents/env.txt`.
+- **Settings in a file:** lines like `DM_OPMODE=0` (handheld mode: lower resolution, higher frame rate) in `Documents/env.txt` win over the settings screen, which then shows them greyed out. `DM_FPS_TARGET=30` keeps Breath of the Wild, Tears of the Kingdom and Octopath Traveler 0 at their original 30 fps, which saves battery; `DM_PRESENT_INTERVAL=game` does the same for Monster Train 2. `DM_SHOW_FPS=1` shows the frame rate at the top left (`--show-fps` when packing turns it on from the start). `DM_LAUNCHER=0` skips the settings screen.
 
 ## Known issues
 
 - No amiibo and no online features.
 - Fire Emblem Engage: after switching away from the app and back, some sounds may stay silent until you restart it.
 - Fire Emblem: Three Houses: small square patches on the ground where decals land.
+- Super Mario Galaxy and Super Mario Galaxy 2: effects drawn as points or lines come out one pixel wide.
 
 ## For developers
 
@@ -162,45 +173,46 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license; see [dm/th
 - **[Atmosphère](https://github.com/Atmosphere-NX/Atmosphere)**：它的内核 mesosphère 是 Horizon 同步语义（地址仲裁器、条件变量）的参考。
 - **yuzu**：着色器参考工具用到的 Maxwell 指令编码，以及内核行为的交叉核对。
 - **[LibHac](https://github.com/Thealexbarney/LibHac)**：在 `dm/tools/nx_extract` 里读取 NSP、把更新叠到本体上。最早的解包用的是 **hactool**。
-- **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)**：SPIR-V 转 Metal 着色语言。
+- **[SPIRV-Cross](https://github.com/KhronosGroup/SPIRV-Cross)**：SPIR-V 转 Metal 着色语言。**[glslang](https://github.com/KhronosGroup/glslang)** 将 OpenGL 游戏的 GLSL 编译成 SPIR-V。
 - **deko3d**（zlib）：`dm/gfx/nvn/nvn_tex.c` 移植了它的贴图布局尺寸算法。
-- **libvpx**（VP9 影片）、**stb_vorbis**（影片声音）、**libdeflate**、**Vulkan 头文件** 和 **NVIDIA FLIP** 连同许可证放在 `dm/third_party`（[清单](dm/third_party/README.md)）。
+- **libvpx**（VP9 影片）、**stb_vorbis**（影片声音）、**Vulkan 头文件** 和 **NVIDIA FLIP** 连同许可证放在 `dm/third_party`（[清单](dm/third_party/README.md)）。
 - 构建时用到 **Capstone**、**lz4**、**fontTools** 和 **XcodeGen**。
 
 ## 游戏
 
-以下游戏都已在 iPhone 上测试，可以正常游玩：
+上游项目报告以下游戏均已在 iPhone 上测试，可以正常游玩：
 
-| 游戏 | 文件夹里放的 NSP | IPA 大小 | 备注 |
-|---|---|---|---|
-| 超级马力欧兄弟 惊奇 | 本体 + 1.2.1 更新 | 约 4 GB | |
-| 火焰纹章 Engage | 本体 + 2.0.0 更新（+ 扩展通行证 DLC） | 约 15 GB | 升级到 60 fps（Switch 上 30 fps） |
-| 密特罗德 生存恐惧 | 本体 + 2.1.0 更新 | 约 5 GB | |
-| 十三机兵防卫圈 | 本体 + 1.10 更新 | 约 5 GB | |
-| 超级马力欧 3D 世界 + 狂怒世界 | 本体 + 1.2.2 更新 | 约 3 GB | |
-| 塞尔达传说 旷野之息 | 本体 + 1.9.0 更新（+ DLC） | 约 16 GB | 升级到 60 fps（Switch 上 30 fps） |
-| 塞尔达传说 织梦岛 | 本体 + 1.1.0 更新 | 约 6 GB | |
-| 超级马力欧 奥德赛 | 本体 + 1.4.1 更新 | 约 6 GB | |
-| 哈迪斯 | 本体 + 1.0.38233 更新 | 约 4 GB | |
-| 塞尔达无双 灾厄启示录 | 本体 + 1.3.0 更新（+ DLC） | 约 15 GB | |
-| 火焰纹章 风花雪月 | 本体 + 1.2.0 更新（+ DLC） | 约 13 GB | 打包时，脚本会在 Mac 上启动游戏几秒，收集游戏运行时编译的着色器 |
+已测试路径需要 iOS / iPadOS 26 或更新版本，以及 iPhone 15 Pro 或更新机型（A17 Pro 或更新芯片），或搭载 M1 或更新芯片的 iPad：游戏贴图采用 BC 压缩，较旧的 iPhone 不支持这种格式。其他游戏暂未支持。脚本会写出分析报告，并根据推测的游戏设置尽力打包 IPA；这样的 IPA 可能无法启动。
 
-正在移植：
-
-- 塞尔达传说 王国之泪（本体 + 1.4.3 更新）：开场洞穴已在 Mac 上渲染；目前仍超出 iPhone 的内存限制。
+本分支还保留实验性的 iOS 17 / Metal 3 兼容路径，尚未在 iOS 17 真机上验证；上游游戏测试结果不能证明该兼容路径也可运行。
 
 | | |
 |:---:|:---:|
-| ![超级马力欧兄弟 惊奇](docs/images/super-mario-bros-wonder.jpg)<br>超级马力欧兄弟 惊奇 | ![火焰纹章 Engage](docs/images/fire-emblem-engage.jpg)<br>火焰纹章 Engage |
-| ![密特罗德 生存恐惧](docs/images/metroid-dread.jpg)<br>密特罗德 生存恐惧 | ![十三机兵防卫圈](docs/images/13-sentinels.jpg)<br>十三机兵防卫圈 |
-| ![超级马力欧 3D 世界 + 狂怒世界](docs/images/super-mario-3d-world.jpg)<br>超级马力欧 3D 世界 + 狂怒世界 | ![塞尔达传说 旷野之息](docs/images/zelda-breath-of-the-wild.jpg)<br>塞尔达传说 旷野之息 |
-| ![塞尔达传说 织梦岛](docs/images/zelda-links-awakening.jpg)<br>塞尔达传说 织梦岛 | ![超级马力欧 奥德赛](docs/images/super-mario-odyssey.jpg)<br>超级马力欧 奥德赛 |
-| ![哈迪斯](docs/images/hades.jpg)<br>哈迪斯 | ![塞尔达无双 灾厄启示录](docs/images/hyrule-warriors-age-of-calamity.jpg)<br>塞尔达无双 灾厄启示录 |
-| ![火焰纹章 风花雪月](docs/images/fire-emblem-three-houses.jpg)<br>火焰纹章 风花雪月 | |
+| ![超级马力欧兄弟 惊奇](docs/images/super-mario-bros-wonder.jpg)<br>超级马力欧兄弟 惊奇<br><sub>IPA ~4 GB</sub> | ![火焰纹章 Engage](docs/images/fire-emblem-engage.jpg)<br>火焰纹章 Engage<br><sub>IPA ~15 GB · 60 fps（Switch 上为 30 fps），更新版本 2.0.0</sub> |
+| ![密特罗德 生存恐惧](docs/images/metroid-dread.jpg)<br>密特罗德 生存恐惧<br><sub>IPA ~5 GB</sub> | ![十三机兵防卫圈](docs/images/13-sentinels.jpg)<br>十三机兵防卫圈<br><sub>IPA ~5 GB</sub> |
+| ![超级马力欧 3D 世界 + 狂怒世界](docs/images/super-mario-3d-world.jpg)<br>超级马力欧 3D 世界 + 狂怒世界<br><sub>IPA ~3 GB</sub> | ![塞尔达传说 旷野之息](docs/images/zelda-breath-of-the-wild.jpg)<br>塞尔达传说 旷野之息<br><sub>IPA ~16 GB · 60 fps（Switch 上为 30 fps），更新版本 1.9.0</sub> |
+| ![塞尔达传说 织梦岛](docs/images/zelda-links-awakening.jpg)<br>塞尔达传说 织梦岛<br><sub>IPA ~6 GB</sub> | ![超级马力欧 奥德赛](docs/images/super-mario-odyssey.jpg)<br>超级马力欧 奥德赛<br><sub>IPA ~6 GB</sub> |
+| ![哈迪斯](docs/images/hades.jpg)<br>哈迪斯<br><sub>IPA ~4 GB</sub> | ![塞尔达无双 灾厄启示录](docs/images/hyrule-warriors-age-of-calamity.jpg)<br>塞尔达无双 灾厄启示录<br><sub>IPA ~15 GB · 60 fps（Switch 上为 30 fps），更新版本 1.3.0</sub> |
+| ![火焰纹章 风花雪月](docs/images/fire-emblem-three-houses.jpg)<br>火焰纹章 风花雪月<br><sub>IPA ~13 GB · 60 fps（Switch 上为 30 fps），更新版本 1.2.0</sub> | ![超级马力欧银河](docs/images/super-mario-galaxy.jpg)<br>超级马力欧银河<br><sub>IPA ~3 GB</sub> |
+| ![塞尔达传说 王国之泪](docs/images/zelda-tears-of-the-kingdom.jpg)<br>塞尔达传说 王国之泪<br><sub>IPA ~17 GB · 60 fps（Switch 上为 30 fps），更新版本 1.4.3</sub> | ![怪物猎人 崛起](docs/images/monster-hunter-rise.jpg)<br>怪物猎人 崛起<br><sub>IPA ~22 GB · 60 fps（Switch 上为 30 fps），更新版本 16.0.2</sub> |
+| ![Ace Attorney Investigations Collection](docs/images/ace-attorney-investigations.jpg)<br>Ace Attorney Investigations Collection<br><sub>IPA ~7 GB</sub> | ![Hades II](docs/images/hades-ii.jpg)<br>Hades II<br><sub>IPA ~4 GB</sub> |
+| ![Unicorn Overlord](docs/images/unicorn-overlord.jpg)<br>Unicorn Overlord<br><sub>IPA ~4 GB</sub> | ![Rhythm Heaven Groove](docs/images/rhythm-heaven-groove.jpg)<br>Rhythm Heaven Groove<br><sub>IPA ~3 GB</sub> |
+| ![Octopath Traveler 0](docs/images/octopath-traveler-0.jpg)<br>Octopath Traveler 0<br><sub>IPA ~4 GB · 60 fps（Switch 上为 30 fps），更新版本 1.0.5</sub> | ![Pokémon Legends: Z-A](docs/images/pokemon-legends-z-a.jpg)<br>Pokémon Legends: Z-A<br><sub>IPA ~6 GB</sub> |
+| ![Cuphead](docs/images/cuphead.jpg)<br>Cuphead<br><sub>IPA ~5 GB</sub> | ![Super Mario Galaxy 2](docs/images/super-mario-galaxy-2.jpg)<br>Super Mario Galaxy 2<br><sub>IPA ~3 GB</sub> |
+| ![FINAL FANTASY TACTICS - The Ivalice Chronicles](docs/images/final-fantasy-tactics.jpg)<br>FINAL FANTASY TACTICS - The Ivalice Chronicles<br><sub>IPA ~11 GB</sub> | ![Absolum](docs/images/absolum.jpg)<br>Absolum<br><sub>IPA ~2 GB</sub> |
+| ![Captain Toad: Treasure Tracker](docs/images/captain-toad-treasure-tracker.jpg)<br>Captain Toad: Treasure Tracker<br><sub>IPA ~2 GB</sub> | ![Brain Memory Training Academy](docs/images/brain-memory-training-academy.jpg)<br>Brain Memory Training Academy<br><sub>IPA ~0.1 GB</sub> |
+| ![The Great Ace Attorney Chronicles](docs/images/the-great-ace-attorney-chronicles.jpg)<br>The Great Ace Attorney Chronicles<br><sub>IPA ~4 GB</sub> | ![STEINS;GATE RE:BOOT](docs/images/steins-gate-reboot.jpg)<br>STEINS;GATE RE:BOOT<br><sub>IPA ~6 GB</sub> |
+| ![Big Brain Academy: Brain vs. Brain](docs/images/big-brain-academy-brain-vs-brain.jpg)<br>Big Brain Academy: Brain vs. Brain<br><sub>IPA ~0.8 GB</sub> | ![Patrick's Parabox](docs/images/patricks-parabox.jpg)<br>Patrick's Parabox<br><sub>IPA ~0.2 GB</sub> |
+| ![Celeste](docs/images/celeste.jpg)<br>Celeste<br><sub>IPA ~0.9 GB</sub> | ![DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition](docs/images/dragon-quest-xi-s.jpg)<br>DRAGON QUEST XI S: Echoes of an Elusive Age – Definitive Edition<br><sub>IPA ~15 GB · 60 fps（Switch 上为 30 fps），更新版本 1.0.4</sub> |
+| ![Monster Train 2](docs/images/monster-train-2.jpg)<br>Monster Train 2<br><sub>IPA ~1.6 GB · 60 fps（Switch 上为 30 fps），更新版本 1.1.1</sub> | ![Raging Loop](docs/images/raging-loop.jpg)<br>Raging Loop<br><sub>IPA ~0.9 GB</sub> |
+| ![DARK SOULS: REMASTERED](docs/images/dark-souls-remastered-creation.jpg)<br>DARK SOULS: REMASTERED<br><sub>IPA ~4 GB · 60 fps（Switch 上为 30 fps），更新版本 1.0.3</sub> | ![Paper Mario: The Thousand-Year Door](docs/images/paper-mario-the-thousand-year-door.jpg)<br>Paper Mario: The Thousand-Year Door<br><sub>IPA ~5 GB · 60 fps（Switch 上为 30 fps），更新版本 1.0.1</sub> |
+| ![Hollow Knight: Silksong](docs/images/hollow-knight-silksong.jpg)<br>Hollow Knight: Silksong<br><sub>IPA ~6.4 GB</sub> | ![Catherine: Full Body](docs/images/catherine-full-body.jpg)<br>Catherine: Full Body<br><sub>IPA ~14 GB</sub> |
+| ![Digimon Story Cyber Sleuth: Complete Edition](docs/images/digimon-story-cyber-sleuth.jpg)<br>Digimon Story Cyber Sleuth: Complete Edition<br><sub>IPA ~5 GB</sub> | ![Animal Crossing: New Horizons](docs/images/animal-crossing-new-horizons.jpg)<br>Animal Crossing: New Horizons<br><sub>IPA ~10.5 GB 更新版本 3.0.3</sub> |
+| ![DRAGON QUEST VII Reimagined](docs/images/dragon-quest-vii-reimagined.jpg)<br>DRAGON QUEST VII Reimagined<br><sub>IPA ~5.9 GB 更新版本 1.2.0</sub> | ![FINAL FANTASY RESONANCE](docs/images/final-fantasy-resonance.jpg)<br>FINAL FANTASY RESONANCE<br><sub>IPA ~10 GB · 60 fps（Switch 上为 30 fps），更新版本 1.0.1</sub> |
+| ![Luigi's Mansion 3](docs/images/luigis-mansion-3.jpg)<br>Luigi's Mansion 3<br><sub>IPA ~7.5 GB · 60 fps（Switch 上为 30 fps），更新版本 1.4.0</sub> | ![AI: THE SOMNIUM FILES](docs/images/ai-the-somnium-files.jpg)<br>AI: THE SOMNIUM FILES<br><sub>IPA ~8.3 GB</sub> |
+| ![ANIMAL WELL](docs/images/animal-well.png)<br>ANIMAL WELL<br><sub>IPA ~54 MB · 更新版本 1.0.10</sub> | ![AI: THE SOMNIUM FILES - nirvanA Initiative](docs/images/ai-the-somnium-files-nirvana-initiative.jpg)<br>AI: THE SOMNIUM FILES - nirvanA Initiative<br><sub>IPA ~11.6 GB · 更新版本 1.0.2</sub> |
+| ![Mario Kart 8 Deluxe](docs/images/mario-kart-8-deluxe.jpg)<br>Mario Kart 8 Deluxe<br><sub>IPA ~11.9 GB · 更新版本 4.0.0 · 不绘制 Mii 头部（未包含固件）</sub> | |
 
-现在构建的最低版本为 iOS / iPadOS 17，旧系统使用实验性的 Metal 3 兼容路径，支持 Metal 4 的 iOS 26+ 设备继续使用 Metal 4。上表的 iPhone 测试结果来自原有 iOS 26 路径，iOS 17 真机测试尚待完成。
-
-需要 iPhone 15 Pro 或更新机型（A17 Pro 或更新芯片），或搭载 M1 或更新芯片的 iPad：游戏贴图采用 BC 压缩，较旧的 iPhone 不支持这种格式。其他游戏暂未支持。脚本会写出分析报告，并根据推测的游戏设置尽力打包 IPA；这样的 IPA 可能无法启动。
 
 ## 打包 IPA
 
@@ -208,18 +220,20 @@ MIT (see [LICENSE](LICENSE)). Third-party code keeps its own license; see [dm/th
 
 ```
 git clone https://github.com/seedds/nxnative.git && cd nxnative
-brew install xcodegen zstd spirv-cross
+brew install xcodegen zstd spirv-cross glslang
 brew install --cask dotnet-sdk
-python3 -m pip install lz4 capstone fonttools
+python3 -m pip install lz4 capstone fonttools "backports.zstd; python_version < '3.14'"
 ```
 
-**2. 把一个游戏的 NSP 放进一个文件夹**，本体和更新（有 DLC 也放进去）：
+**2. 把一个游戏的文件放进一个文件夹**：本体（NSP 或 XCI 卡带备份），以及你拥有的更新和 DLC：
 
 ```
 ~/Games/MarioWonder/
   Super Mario Bros. Wonder [010015100B514000][v0].nsp
   Super Mario Bros. Wonder [010015100B514800][v327680].nsp
 ```
+
+任何版本均可，有无更新都可以：脚本会打包文件夹里最新的版本。DLC 也可选；文件夹中有就打包，没有则与未安装 DLC 的 Switch 一样。每个游戏在特定版本上测试过（上表列出更新号时，60 fps 需要该版本）。使用其他版本时，脚本会使用其自身的着色器构建，并提示尚未测试；针对已测试版本代码的修复（例如 60 fps 补丁）不会应用到其他版本。
 
 **3. 运行脚本：**
 
@@ -229,7 +243,9 @@ python3 scripts/build_ipa_from_nsp.py ~/Games/MarioWonder -k ~/keys/prod.keys
 
 IPA 会出现在同一个文件夹里（这里是 `~/Games/MarioWonder/SMBWMobile.ipa`）。第一次打包要 30–60 分钟，之后约 10 分钟。需要的空闲磁盘空间约为 NSP 大小的两倍再加 10 GB。`-o`（输出路径）、`--app-name` 等选项用 `-h` 查看。
 
-**4. 安装**：用你的侧载工具（AltStore、Sideloadly、LiveContainer 等）安装 IPA。App 会带上游戏的名字、图标和版本号（例如马力欧惊奇更新版为 1.2.1；没有更新时使用本体版本）。
+**4. 安装**：用你的侧载工具（AltStore、Sideloadly、LiveContainer 等）安装 IPA。App 会带上游戏的名字、图标和版本号（例如马力欧惊奇更新版为 1.2.1；没有更新时使用本体版本）。如果签名工具支持，请启用 **Increased Memory Limit** 权限（`com.apple.developer.kernel.increased-memory-limit`）：没有它时，iOS 只给 App 约 3.4 GB 内存，较大的游戏会被关闭（塞尔达无双 灾厄启示录、Hades II 超过该值，旷野之息和茶杯头接近）；启用后，较新的 iPhone 可提供约 6 GB。
+
+有 Apple 开发者账号时，也可以通过 Xcode 构建和安装：`--prepare-xcode` 为游戏生成 Xcode 工程，不打包 IPA（见 [通过 Xcode 在设备上构建运行](docs/development.md#build-and-run-on-a-device-with-xcode)）。
 
 ## 一次构建 Mac 和 iOS 安装包
 
@@ -269,24 +285,30 @@ Mac 手机体感：可以用 Xbox 手柄负责按键和摇杆，同时用 iPhone
 
 旷野之息 1.9.0 的 Mac 构建支持 `DM_GAME_RES=1920x1080`，将场景、HUD 和输出一起提高到真正的 1080p；`DM_GAME_RES=1280x720` 则使用 720p。在用户 `env.txt` 中设置后重启生效。更高分辨率会增加 GPU 耗时，可按清晰度和帧率选择。
 
+旷野之息 1.9.0 的 Mac 构建还可在 `env.txt` 中设置 `DM_FPS=90` 或 `DM_FPS=120`，重启后生效。这两个实验性模式按实际经过的时间调整游戏步长，同时保留游戏主动指定的时序。默认仍为 60；设置值是帧率上限，实际帧率取决于场景、GPU 和显示器，分辨率与特效保持不变。
+
 ## 游玩
 
-**触屏按键。** 点顶部的 **2D** / **3D** 切换布局，App 会记住你的选择。3D 世界、旷野之息、奥德赛、哈迪斯、灾厄启示录和风花雪月默认 3D 布局，其他游戏默认 2D。
+**设置。** 游戏启动前的设置页提供该游戏支持的选项：帧率、渲染比例、主机／掌机模式、游戏语言、帧率计数器和 Apple 性能 HUD。点 **Play** 启动，App 会记住选择。
 
+**触屏按键。** 点顶部的 **2D** / **3D** 切换布局，App 会记住选择。惊奇、Engage、生存恐惧、十三机兵防卫圈、织梦岛、逆转检察官合集、圣兽之王、Rhythm Heaven Groove、歧路旅人 0、宝可梦传说 Z-A、茶杯头、Absolum、Brain Memory Training Academy、大逆转裁判编年史、STEINS;GATE RE:BOOT、灵活脑学校、Patrick's Parabox、蔚蓝和人狼村之谜默认 2D，其他游戏默认 3D（STEINS;GATE RE:BOOT 的快速存档为 3D 布局的 R3）。3D 布局不绘制右摇杆（多数游戏用于转视角）：在屏幕右侧三分之一区域，从按键以外的位置开始滑动。超级马力欧银河和银河 2 中，触摸按键外的区域可移动指针；奇诺比奥队长中可触摸游戏画面（触碰方块、击晕敌人），灵活脑学校也可触摸菜单和活动。
 
-连上游戏手柄后，触屏按键会隐藏，手柄上的所有按键都能用。
+连上游戏手柄后，触屏按键会隐藏，手柄上的所有按键均可使用。
 
-- **游戏语言**默认英文。想用中文，在 `Documents/env.txt` 里加一行 `DM_LANG=zh-Hans`。
+**摇晃。** 摇晃 iPhone 可在读取体感的游戏中模拟摇晃手柄：例如超级马力欧 奥德赛的摇晃投帽，需要默认的主机模式才会接收。轻碰不算，需要快速甩动手机。
+
+- **游戏语言**默认英文。打包时用 `--language`（`-l`）指定语言代码或名称，例如 `-l ja`、`-l zh-Hans`、`-l French`（Spyder 中为 `LANGUAGE`）。游戏必须包含该语言；脚本会列出游戏支持的语言，选择缺失语言时会停止。无需重新打包，也可在设置页修改。
 - **存档和日志**在「文件」App 里，App 名字对应的文件夹下：`save/` 和 `log.txt`。出问题时请发 `log.txt`（上一次运行的是 `log.prev.txt`）。
-- **第一次进新场景时短暂卡顿**是正常的：App 会为它编译一次图形，下次启动就记住了。
-- **重装：** 有些侧载工具重装后会给 App 一个新的数据文件夹。把旧文件夹里的 `save/` 和 `pso_user.tsv` 拷过去，进度就不会丢。
-- **不重新打包也能改设置：** 在 `Documents/env.txt` 里写一行一个设置，例如 `DM_OPMODE=0`（掌机模式：分辨率更低、帧率更高）。
+- **第一次进入新场景时短暂卡顿**是正常的：App 会为它编译一次图形，下次启动就记住了。
+- **重装：** 有些侧载工具重装后会给 App 一个新的数据文件夹。把旧文件夹里的 `save/` 和 `pso_user.tsv` 拷过去，保留进度。
+- **文件设置：** 在 `Documents/env.txt` 中逐行写设置，例如 `DM_OPMODE=0`（掌机模式：分辨率更低、帧率更高），会覆盖设置页，对应选项会变灰。`DM_FPS_TARGET=30` 可让旷野之息、王国之泪和歧路旅人 0 保持原版 30 fps，节省电量；`DM_PRESENT_INTERVAL=game` 对 Monster Train 2 有同样作用。`DM_SHOW_FPS=1` 在左上角显示帧率（打包时 `--show-fps` 可默认启用）。`DM_LAUNCHER=0` 跳过设置页。
 
 ## 已知问题
 
 - 没有 amiibo，也没有联网功能。
-- 火焰纹章 Engage：切到别的 App 再回来后，部分声音可能一直没有，要重开游戏。
+- 火焰纹章 Engage：切到其他 App 再回来后，部分声音可能一直没有，需要重启游戏。
 - 火焰纹章 风花雪月：地面贴花处存在小方块。
+- 超级马力欧银河和银河 2：以点或线绘制的特效只有一个像素宽。
 
 ## 开发者
 

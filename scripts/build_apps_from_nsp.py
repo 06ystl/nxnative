@@ -67,8 +67,8 @@ def main(args=None):
     sys.path.insert(0, str(repo / 'dm/tools')); import nacp
     sys.path.insert(0, str(repo / 'dm/macos/tools')); import package_app
     nsp.nacp = nacp
-    nsp_dir = Path(args.nsp_dir or nsp.ask('NSP folder: ', ' NSP 文件夹', 'the NSP folder')).expanduser().resolve()
-    keys = Path(args.keys or nsp.ask('prod.keys path: ', ' prod.keys（-k）', 'prod.keys (-k)')).expanduser().resolve()
+    nsp_dir = Path(args.nsp_dir or nsp.ask('NSP folder: ', 'the NSP folder')).expanduser().resolve()
+    keys = Path(args.keys or nsp.ask('prod.keys path: ', 'prod.keys (-k)')).expanduser().resolve()
     if not nsp_dir.is_dir(): raise nsp.BuildError(f'Not a folder: {nsp_dir}')
     if not keys.is_file(): raise nsp.BuildError(f'File not found: {keys}')
     env = dict(os.environ, PATH=os.pathsep.join(nsp.TOOL_PATHS + [os.environ.get('PATH', '/usr/bin:/bin:/usr/sbin:/sbin')]))
@@ -107,7 +107,7 @@ def main(args=None):
     env.pop('IOSOUT', None)
     if 'macos' in targets:
         env.update(MACOSX_DEPLOYMENT_TARGET='26.0', CLANG_MODULE_CACHE_PATH=str(work / 'tools/clang_modules'))
-    picks = nsp.pick_nsps(fam, versions)
+    picks = nsp.pick_nsps(fam, nsp.nsp_versions(fam, g.builds()), versions)
     gb = sum({p.stat().st_size for b, u in picks.values() for p in (b, u) if p}) / 2**30 + 6
     if nsp.free_gb(nsp_dir) < gb and not all((ex / v).exists() for v in versions):
         raise nsp.BuildError(f'Less than {gb:.0f} GB free on the NSP volume.')
@@ -119,8 +119,10 @@ def main(args=None):
         base, update = picks[ver]
         dirs[ver] = nsp.extract(nx, keys, ex, ver, base, update, clone, logs, g)
         if update is None and clone is None and nsp.can_clone(ex): clone = dirs[ver] / 'RomFS'
+    mismatches = [f'{v}: {item}' for v in versions for item in nsp.build_mismatch(dirs[v], v, g)]
+    if mismatches: raise nsp.BuildError('The extracted modules do not match the registered builds: ' + '; '.join(mismatches))
     game = dirs[pkg]
-    aoc = nsp.extract_aoc(nx, keys, work, app_id, fam, logs)
+    aoc = nsp.extract_aoc(nx, keys, repo, work, app_id, fam, logs)
     base = next((dirs[v] for v in versions if picks[v][1] is None), dirs[versions[0]])
     name = args.app_name or nacp.name(base / 'control.nacp')
     if not name: raise nsp.BuildError('Cannot read the game name; re-extract or use --app-name.')
@@ -129,17 +131,18 @@ def main(args=None):
     patched = work / f'patched_{pkg}'
     env['MAIN'] = str(game / 'ExeFS/main')
     nsp.rewrite(sys.executable, repo, game / 'ExeFS', patched, env, logs, g)
+    nsp.chain_header(sys.executable, repo, env, logs)
     if g.get('shader_glslc_capture', 'off') == 'on':
         nsp.capture_glslc(repo, {v: dirs[v] for v in need}, pkg, patched, work, env, logs, g)
     sh = work / 'shader'
-    nsp.split_shaders(sys.executable, repo, [dirs[v] / 'RomFS' for v in need],
+    package_key = nsp.split_shaders(sys.executable, repo, [dirs[v] / 'RomFS' for v in need],
                       [dirs[v] / 'ExeFS/main' for v in need], sh / 'pkg', env, logs, g)
     ios = None
     if 'ios' in targets:
         # One dmsh_build invocation produces the Mac cache and, via IOSOUT, iOS libraries.
-        ios = nsp.build_shaders(sys.executable, repo, sh, xlate, env, logs, g)
+        ios = nsp.build_shaders(sys.executable, repo, sh, xlate, env, logs, g, package_key)
     else:
-        nsp.build_shaders(sys.executable, repo, sh, xlate, env, logs, g, with_ios=False)
+        nsp.build_shaders(sys.executable, repo, sh, xlate, env, logs, g, package_key, with_ios=False)
     completed, failures = [], []
     for target in targets:
         out = outputs[target]

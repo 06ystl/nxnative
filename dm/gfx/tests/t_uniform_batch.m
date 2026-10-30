@@ -2,17 +2,16 @@
 // draws, query counts must accumulate, and only the updated bytes are written back.
 #define NVN_OPTIMIZATION_TEST 1
 #include "../nvn/nvn_mtl.m"
-int prog_key(const prog_t *p, unsigned s, uint8_t k[8]) { (void)p; (void)s; memset(k,0,8); return 0; }
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
 module_t g_mod[MAX_MOD]; int g_nmod;
 void svc_thread_dump(void) {}
 uint64_t now_ns(void) { return bp_now(); }
-uint64_t nvn_new_serial(void) { static uint64_t n=1000000; return ++n; }
 static int checks,failed;
 #define EXPECT(label, expected, actual) do { uint64_t a=(actual),e=(expected); checks++; \
     if(a!=e){failed++;printf("FAIL %s: expected %llu, got %llu\n",label,e,a);} }while(0)
-typedef struct { uint8_t bytes[8192]; size_t n; } commands;
+// Indirect-count metadata enlarged draw records; retain the 94-update fixture.
+typedef struct { uint8_t bytes[16384]; size_t n; } commands;
 static void emit(commands *c,unsigned op,const void *p,size_t n) {
     size_t z=(8+n+7)&~7ull;op_hdr h={op,(uint32_t)z};
     if(c->n+z>sizeof c->bytes)abort();memcpy(c->bytes+c->n,&h,8);
@@ -53,7 +52,7 @@ static void run(int enabled,int readonly,int copy_boundary,int updates) {
     id<MTLBuffer> readback=[g_dev newBufferWithLength:256 options:MTLResourceStorageModeShared];res_add(readback);
     mtl_sub_begin();uint64_t before=g_stat_pass,nb=g_uniform_batches;
     mtl_exec(c.bytes);rp_end();
-    EXPECT("render pass count",enabled&&readonly?2:updates+1,g_stat_pass-before);
+    EXPECT("render pass count",enabled&&readonly?2:1,g_stat_pass-before);
     EXPECT("batch selected only for proven read-only shader",enabled&&readonly?1:0,g_uniform_batches-nb);
     [blit() copyFromTexture:tex_mtl(&color) sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0)
         sourceSize:MTLSizeMake(8,8,1) toBuffer:readback destinationOffset:0 destinationBytesPerRow:32 destinationBytesPerImage:256];
@@ -84,8 +83,8 @@ static void run(int enabled,int readonly,int copy_boundary,int updates) {
     }
     res_remove(readback);
 }
-// Full-binding updates can stay inside a pass; partial coverage must flush
-// before the next draw. Verify pixels, preserved bytes and a following copy.
+// Upstream shadows preserve both full and partial updates inside one pass.
+// Verify distinct draw values, untouched bytes and a following GPU copy.
 static void run_deferred(int partial,int later_partial) {
     g_test_uniform_batch=0;shader->sh[1]->uniform_ro=1;
     memset(uniforms,0x5a,65536);memset(uniforms+65536,0,128);
@@ -114,8 +113,8 @@ static void run_deferred(int partial,int later_partial) {
     id<MTLBuffer> out=[g_dev newBufferWithLength:256 options:MTLResourceStorageModeShared];res_add(out);
     mtl_sub_begin();uint64_t before=g_stat_pass,conflicts=g_ubd_conflicts;
     mtl_exec(c.bytes);rp_end();
-    EXPECT("full updates preserve one render pass",partial?3:1,g_stat_pass-before);
-    EXPECT("partial coverage ends before reads",partial?2:0,g_ubd_conflicts-conflicts);
+    EXPECT("full and partial updates preserve one render pass",1,g_stat_pass-before);
+    EXPECT("shadowed reads do not need a conflict flush",0,g_ubd_conflicts-conflicts);
     enc_b_copy_texture_buffer(blit(),tex_mtl(&color),0,0,MTLOriginMake(0,0,0),MTLSizeMake(8,8,1),out,0,32,256);
     EXPECT("deferred submission completes",1,mtl_wait(mtl_sub_commit(),5000000000ull));
     EXPECT("deferred submission has no GPU error",0,mtl_last_commit_error());

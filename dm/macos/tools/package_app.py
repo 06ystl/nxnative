@@ -7,8 +7,13 @@ import plistlib
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'gfx/tools'))
+import dmsh_chain
 
 
 class PackageError(Exception):
@@ -37,10 +42,25 @@ def shader_inventory(msl, chain):
     return libraries, '.'.join(map(str, minimum if minimum[2] else minimum[:2]))
 
 
+
+def validate_shader_inputs(msl, chain, g):
+    folder = msl / f'b-{chain}'
+    stamp = dmsh_chain.read_stamp(folder)
+    if stamp.get('game') != g.id or stamp.get('inputs') != dmsh_chain.inputs(g):
+        raise PackageError(f'Shader inputs in {folder} do not match game profile {g.id}; rebuild its shaders')
+    expected = dmsh_chain.table_head(folder)
+    for name in ('c1_full.tsv', 'cb_extent.tsv'):
+        table = g.table(name)
+        head = table.read_text().partition('\n')[0] if table.is_file() else ''
+        if not head.startswith(expected + ' '):
+            raise PackageError(f'{table} does not name the shader library inputs; rebuild its shader tables')
+
+
 def build_app(repo, work, out, g, patched, romfs, msl, app_name, bundle_id,
               display_version, icon, aoc, env_file, env, run, can_clone):
-    chain = re.search(r'^#define DMSH_CHAIN "([^"]+)"', g.table('dmsh_chain.h').read_text(), re.M).group(1)
+    chain = re.search(r'^#define DMSH_CHAIN "([^"]+)"', (repo / 'dm/gfx/nvn/dmsh_chain.h').read_text(), re.M).group(1)
     libraries, minimum = shader_inventory(msl, chain)
+    validate_shader_inputs(msl, chain, g)
     logs = work / 'logs/macos'
     out.parent.mkdir(parents=True, exist_ok=True)
     if out.exists():
@@ -60,12 +80,13 @@ def build_app(repo, work, out, g, patched, romfs, msl, app_name, bundle_id,
         (contents / 'MacOS').mkdir(parents=True); dm.mkdir(parents=True)
         shutil.copy2(host, contents / 'MacOS/nxnative')
         for module in g.words('modules'):
-            for suffix in ('patched.bin', 'fixups.tsv', 'gates.tsv', 'params.tsv', 'cuts.tsv', 'obs.tsv'):
+            for suffix in ('patched.bin', 'fixups.tsv', 'gates.tsv', 'cuts.tsv', 'obs.tsv'):
                 shutil.copy2(patched / f'{module}.{suffix}', dm)
-        for name in ('shader_map.tsv', 'c1_full.tsv', 'pso_manifest.tsv'):
+        for name in ('shader_map.tsv', 'c1_full.tsv', 'cb_extent.tsv', 'pso_manifest.tsv'):
             shutil.copy2(g.table(name), dm)
         if env_file: shutil.copy2(env_file, dm / 'env.txt')
         shader_dst = res / 'msl' / f'b-{chain}'; shader_dst.mkdir(parents=True)
+        shutil.copy2(msl / f'b-{chain}' / 'inputs.tsv', shader_dst)
         for lib in libraries:
             shutil.copy2(lib, shader_dst)
             if lib.with_suffix('.json').is_file(): shutil.copy2(lib.with_suffix('.json'), shader_dst)

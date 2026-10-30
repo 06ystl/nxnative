@@ -1,12 +1,10 @@
 // Exercise indirect argument buffers, GPU writes, indexed draws and presentation.
 #include "../nvn/nvn_mtl.m"
-int prog_key(const prog_t *p, unsigned s, uint8_t k[8]) { (void)p; (void)s; memset(k, 0, 8); return 0; }
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
 module_t g_mod[MAX_MOD]; int g_nmod;
 void svc_thread_dump(void) {}
 uint64_t now_ns(void) { return bp_now(); }
-uint64_t nvn_new_serial(void) { static uint64_t n = 1000000; return ++n; }
 static int checks, failed;
 #define EXPECT(name, condition) do { checks++; if (!(condition)) { failed++; fprintf(stderr, "FAIL %s\n", name); } } while (0)
 static void test_uploads(void) {

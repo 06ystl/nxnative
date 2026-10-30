@@ -29,7 +29,7 @@ static uint64_t uniform_version_gpu(uint64_t address, uint64_t size) {
 }
 static int uniform_batch_program(uint64_t base, uint64_t size) {
     NvProg *p = S.prog ? prog_get(S.prog) : nil;
-    if (!p || !p->sh[0] || g_ui_moff != 0 || tbdr_on()) return 0;
+    if (!p || !p->sh[0] || tbdr_on()) return 0;
     for (int st = 0; st < 6; st++) {
         NvShader *sh = p->sh[st]; if (!sh) continue;
         if (st > 1 || sh->stage != st || !sh->uniform_ro) return 0;

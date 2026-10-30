@@ -11,32 +11,28 @@
 #include "hle.h"
 #if TARGET_OS_OSX
 #include "resolution_mac.h"
+#include "timing_mac.h"
 #endif
 
 module_t g_mod[MAX_MOD];
 int g_nmod;
 pthread_key_t g_key18, g_keytls, g_keytlr, g_keygate;
-pthread_key_t g_keyres[2], g_keyaspect, g_keyaspectui;   // g_keyaspect: aspect ratio upper-limit parameter slot (KASPECT)          // resolution parameter slots (rewriter PARAMS, KRES0 handheld / KRES1 docked); 0 and not allocated if the build output lacks them
-enum { KEY_K18, KEY_KTLS, KEY_KTLR, KEY_KGATE, KEY_KRES0, KEY_KRES1, KEY_KASPECT, KEY_KASPECTUI, KEY_N };
+enum { KEY_K18, KEY_KTLS, KEY_KTLR, KEY_KGATE, KEY_N };
 
 uint64_t resolve_import(module_t *m, const char *name);
+int hle_implements(const char *name);
 void gate_register(uint64_t ret_addr, const char *kind, int arg, uint64_t orig);
 
 static pthread_key_t key_value(unsigned i) {
     switch (i) {
     case KEY_K18: return g_key18; case KEY_KTLS: return g_keytls; case KEY_KTLR: return g_keytlr;
-    case KEY_KGATE: return g_keygate; case KEY_KRES0: return g_keyres[0]; case KEY_KRES1: return g_keyres[1];
-    case KEY_KASPECT: return g_keyaspect; default: return g_keyaspectui;
+    default: return g_keygate;
     }
 }
 static void create_keys(void) {
     if (pthread_key_create(&g_key18, NULL) || pthread_key_create(&g_keytls, NULL) ||
         pthread_key_create(&g_keytlr, NULL) || pthread_key_create(&g_keygate, NULL)) die("创建宿主键失败");
-    // Parameter slot keys are always created (not decided by whether the build output uses them: an iOS app has no params.tsv, so deciding by file would miss creating them and the key page would be written as 0 → the game reads TSD slot 0)
-    if (pthread_key_create(&g_keyres[0], NULL) || pthread_key_create(&g_keyres[1], NULL) ||
-        pthread_key_create(&g_keyaspect, NULL) || pthread_key_create(&g_keyaspectui, NULL)) die("创建参数位键失败");
-    LOG("键号 K18=%lu KTLS=%lu KTLR=%lu KGATE=%lu KRES0=%lu KRES1=%lu KASPECT=%lu KASPECTUI=%lu",
-        g_key18, g_keytls, g_keytlr, g_keygate, g_keyres[0], g_keyres[1], g_keyaspect, g_keyaspectui);
+    LOG("key numbers K18=%lu KTLS=%lu KTLR=%lu KGATE=%lu", g_key18, g_keytls, g_keytlr, g_keygate);
 }
 
 // K slot check: the pthread TSD layout is fixed, slot = tpidrro_el0 + 8*key
@@ -114,6 +110,32 @@ module_t *module_of(const void *p) {
     return NULL;
 }
 
+// Whether main imports a symbol whose name starts with prefix (an undefined dynamic symbol: one main calls but another module defines), for behaviour that follows what the game uses
+int dm_main_imports(const char *prefix) {
+    size_t n = strlen(prefix);
+    for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "main")) {
+        module_t *m = &g_mod[i];
+        for (unsigned k = 1; k < m->nsym; k++) if (!m->symtab[k].st_shndx && !strncmp(m->strtab + m->symtab[k].st_name, prefix, n)) return 1;
+    }
+    return 0;
+}
+
+// SDK major version, from the version string the SDK's libraries keep in the sdk module's read-only data ("NintendoSDK_nnSdk-10_4_0"; SDK 12 spells it NintendoSdk_).
+// Behaviour that follows the SDK version is decided by it (the NVN API version, the shared-font layout), not by the game profile. 0 = no sdk module or no version string
+int dm_sdk_major(void) {
+    static int major = -1;
+    if (major >= 0) return major;
+    major = 0;
+    for (int i = 0; i < g_nmod; i++) if (!strcmp(g_mod[i].name, "sdk")) {
+        const char *b = (const char *)g_mod[i].base + g_mod[i].ro_off, *e = (const char *)g_mod[i].base + g_mod[i].key_page_off;   // read-only data, data and bss
+        for (const char *p = b; (p = memmem(p, (size_t)(e - p), "_nnSdk-", 7)); p += 7)
+            if (p - b >= 11 && !strncasecmp(p - 11, "NintendoSDK", 11) && p[7] >= '0' && p[7] <= '9') {
+                major = atoi(p + 7); LOG("sdk: NintendoSDK nnSdk-%.12s (major %d)", p + 7, major); break; }
+    }
+    if (!major) LOG("[RED] sdk: no SDK version string in the sdk module; SDK-dependent behaviour takes the newer SDKs' side");
+    return major;
+}
+
 // Cross-module symbol resolution: first look for a definition in the loaded modules, and only if not found hand over to HLE / stubs
 static uint64_t resolve_sym(module_t *m, const char *name) {
     for (int i = 0; i < g_nmod; i++) { void *p = module_sym(&g_mod[i], name); if (p) return (uint64_t)p; }
@@ -133,7 +155,7 @@ static void force_init(void) {
 static void *force_lookup(const char *name) {
     for (unsigned i = 0; i < g_nforce; i++)
         if (!strcmp(g_force[i].name, name)) {
-            if (!g_force_hits[i]++ && g_flag.imports) LOG("force %s  （%s）", name, g_force[i].why);
+            if (!g_force_hits[i]++ && g_flag.imports) LOG("force %s  (%s)", name, g_force[i].why);
             void *hlecount_wrap(const char *, const char *, void *); return hlecount_wrap("FORCE", name, g_force[i].fn);   // A counting stub when DM_HLECOUNT is set
         }
     return NULL;
@@ -152,10 +174,10 @@ static void read_layout(module_t *m, const char *dir) {
     char path[1024]; snprintf(path, sizeof path, "%s/%s.fixups.tsv", dir, m->name);
     FILE *f = fopen(path, "r");
     if (!f) die("open %s", path);
-    static const char *kn[8] = {"K18", "KTLS", "KTLR", "KGATE", "KRES0", "KRES1", "KASPECT", "KASPECTUI"};
+    static const char *kn[KEY_N] = {"K18", "KTLS", "KTLR", "KGATE"};
     char line[256], key[32]; unsigned long v; unsigned seen = 0;
     while (fgets(line, sizeof line, f)) {
-        if (sscanf(line, "# %31s %lx", key, &v) != 2) die("%s: 产物是旧改写器出的，换成当前代号（dm/PRODUCT）的产物", path);
+        if (sscanf(line, "# %31s %lx", key, &v) != 2) die("%s: the output comes from an old rewriter; rewrite the modules again with dm/tools/patch_nso.py", path);
         if (!strcmp(key, "PATCH_OFF")) m->patch_off = strtoll(line + 2 + strlen(key), NULL, 16);   // may be negative (patch area before the base)
         else if (!strcmp(key, "IMAGE_SIZE")) m->image_size = v;
         else if (!strcmp(key, "FILE_IMAGE_LEN")) m->file_image_len = v;
@@ -164,8 +186,9 @@ static void read_layout(module_t *m, const char *dir) {
         else if (!strcmp(key, "TEXT_END")) m->text_end = v;
         else if (!strcmp(key, "RO_OFF")) m->ro_off = v;
         else if (!strcmp(key, "DATA_OFF")) m->data_off = v;
+        else if (!strcmp(key, "FPS_STATE_OFF")) m->fps_state_off = v;
         else if (!strcmp(key, "BUILD_ID")) sscanf(line, "# %*s %32s", m->build_id);
-        else for (int k = 0; k < 8; k++) {
+        else for (int k = 0; k < KEY_N; k++) {
             size_t n = strlen(kn[k]);
             if (!strncmp(key, "KEY_", 4) && !strncmp(key + 4, kn[k], n) && !strcmp(key + 4 + n, "_IDX")) {
                 m->key_idx[k] = (unsigned)strtoul(strrchr(line, '\t') + 1, 0, 10); seen |= 1u << k;
@@ -173,21 +196,55 @@ static void read_layout(module_t *m, const char *dir) {
         }
     }
     fclose(f);
-    if (!m->patch_off || m->key_page_off % 0x4000 || m->key_page_size != 0x4000 || seen != 0xff)
-        die("%s: 产物是旧改写器出的，换成当前代号（dm/PRODUCT）的产物", path);
+    if (!m->patch_off || m->key_page_off % 0x4000 || m->key_page_size != 0x4000 || seen != (1u << KEY_N) - 1)
+        die("%s: the output comes from an old rewriter; rewrite the modules again with dm/tools/patch_nso.py", path);
     if (m->patch_off < 0 && (!m->image_size || !m->file_image_len || m->file_image_len % 0x4000 || m->patch_off % 0x4000 || m->key_page_off + m->key_page_size > m->image_size))
-        die("%s: 补丁区在首址前，但 IMAGE_SIZE / FILE_IMAGE_LEN 缺失或不对 | patch area before the base, but IMAGE_SIZE / FILE_IMAGE_LEN missing or wrong", path);
+        die("%s: patch area before the base, but IMAGE_SIZE / FILE_IMAGE_LEN missing or wrong", path);
 }
 
+// Frame step state (the page after the key page, read-write; layout in patch_nso.py FRAME_STEP): the rewriter's stubs step the game by the host's whole vsyncs capped at this
+// target, 0 = the game's own interval logic. The profile's fps_target, overridden by DM_FPS_TARGET (0, 30 or 60); the graphics layer decides the steps and paces presents
+// (hle_nvn.c fstep_tick)
+uint8_t *dm_fps_state;
+static const char *g_fps_mod;   // the module holding the state page (for the log)
+static void install_fps_state(module_t *m) {
+    if (m->fps_state_off + 0x40 > m->size || m->fps_state_off < m->key_page_off + m->key_page_size) die("%s: frame step state page out of range", m->name);
+    dm_fps_state = m->base + m->fps_state_off; g_fps_mod = m->name;
+}
+// The settings in the state page, written when the game starts (main.c, after host loading): on iOS the loading runs at app launch, before the launcher has set DM_FPS_TARGET and
+// DM_RENDER_SCALE (Launcher.swift), and nothing reads the page before the game runs
+void dm_fps_state_apply(void) {
+    if (!dm_fps_state) return;
+    const char *e = getenv("DM_FPS_TARGET"); int t = e ? atoi(e) : DM_GAME_FPS_TARGET;
+    if (t != 0 && t != 30 && t != 60) { LOG("[RED] DM_FPS_TARGET=%s: must be 0, 30 or 60; using the game's own frame step", e); t = 0; }
+#if TARGET_OS_OSX
+    // The Mac fractional adapter owns timing when enabled; never apply two clocks.
+    if (dm_game_frame_target() > 0) t = 0;
+    else if (!e) {
+        const char *mac_fps = getenv("DM_FPS");
+        if (mac_fps && (!strcmp(mac_fps, "30") || !strcmp(mac_fps, "60"))) t = atoi(mac_fps);
+    }
+#endif
+    float f = (float)t; memcpy(dm_fps_state, &f, sizeof f);
+    // Keep the removed Mac scaling experiment inactive; DM_GAME_RES owns its
+    // complete resolution preset. The upstream iOS launcher retains its scale.
+    float sc = 1.0f;
+#if TARGET_OS_IPHONE
+    const char *rs = getenv("DM_RENDER_SCALE");
+    if (rs) { char *end; sc = strtof(rs, &end); if (end == rs || *end || !(sc >= 0.5f && sc <= 1.0f)) { LOG("【红】DM_RENDER_SCALE=%s: must be 0.5 to 1.0; keeping the game's size", rs); sc = 1.0f; } else LOG("%s: 3D views rendered at %.2f of the game's size (DM_RENDER_SCALE)", g_fps_mod, sc); }
+#endif
+    memcpy(dm_fps_state + 0x10, &sc, sizeof sc);
+    char cap[32]; snprintf(cap, sizeof cap, ", capped at %d fps", t);
+    LOG("%s: frame step %s%s (%s)", g_fps_mod, !t ? "as the game sets it" : "in whole vsyncs decided by the host", t ? cap : "", e ? "DM_FPS_TARGET" : "game profile fps_target");
+}
 static void install_key_page(module_t *m) {
     if (m->key_page_off + m->key_page_size > m->size) die("%s: 键页越界", m->name);
     uint64_t *page = (uint64_t *)(m->base + m->key_page_off);
     memset(page, 0, m->key_page_size);
-    for (unsigned i = 0; i < 4; i++) page[m->key_idx[i]] = (uint64_t)key_value(i) * 8;
-    page[m->key_idx[KEY_KRES0]] = (uint64_t)g_keyres[0] * 8; page[m->key_idx[KEY_KRES1]] = (uint64_t)g_keyres[1] * 8;
-    page[m->key_idx[KEY_KASPECT]] = (uint64_t)g_keyaspect * 8; page[m->key_idx[KEY_KASPECTUI]] = (uint64_t)g_keyaspectui * 8;
-    for (int k = 0; k < 8; k++) if (!page[m->key_idx[k]]) die("%s: 键页第 %d 项为 0（宿主键没建）——游戏会读到 TSD 0 号槽", m->name, k);
+    for (unsigned i = 0; i < KEY_N; i++) page[m->key_idx[i]] = (uint64_t)key_value(i) * 8;
+    for (int k = 0; k < KEY_N; k++) if (!page[m->key_idx[k]]) die("%s: 键页第 %d 项为 0（宿主键没建）——游戏会读到 TSD 0 号槽", m->name, k);
     if (mprotect(m->base + m->key_page_off, m->key_page_size, PROT_READ)) die("%s 键页 mprotect", m->name);
+    if (m->fps_state_off) install_fps_state(m);
 }
 
 static void register_gates(module_t *m, const char *dir) {
@@ -228,7 +285,7 @@ static void relocate(module_t *m) {
         case DT_RELR: relr = d->d_un.d_ptr; break;
         case DT_RELRSZ: relrsz = d->d_un.d_val; break;
     }
-    int cnt[3] = {0}, nint = 0;
+    int cnt[3] = {0}, nint = 0, nweak0 = 0;
     unsigned nrelr = relr ? relr_apply(m, relr, relrsz, (uint64_t)m->base) : 0;
     const Elf64_Rela *tabs[2] = {(const Elf64_Rela *)(m->base + rela), (const Elf64_Rela *)(m->base + jmprel)};
     uint64_t sizes[2] = {relasz, pltsz};
@@ -249,12 +306,17 @@ static void relocate(module_t *m) {
                 if (!v) v = self;
                 if (v != self && nint++ < 8) LOG("%s: %s 绑到先装模块的定义（%s） | bound to an earlier module's definition", m->name, m->strtab + s->st_name, module_of((void *)v) ? module_of((void *)v)->name : "?");
             }
-            if (!v) v = resolve_sym(m, m->strtab + s->st_name);
+            // An undefined weak symbol that no module defines and the host does not implement is 0, as Horizon's rtld binds it: the code tests its address before calling it.
+            // Octopath Traveler 0's main imports the thread_local init function _ZTHN13LowLevelTasks5FTask10ActiveTaskE weakly; a named stub made it look defined and the game called it
+            const char *nm = m->strtab + s->st_name;
+            int weak0 = !v && !s->st_shndx && ELF64_ST_BIND(s->st_info) == STB_WEAK && !guest_sym(nm) && !hle_implements(nm);
+            if (weak0 && nweak0++ < 8) LOG("%s: undefined weak %s bound to 0", m->name, nm);
+            if (!v && !weak0) v = resolve_sym(m, nm);
             if (type == R_AARCH64_JUMP_SLOT) { *where = v; cnt[2]++; }
             else { *where = v + r->r_addend; cnt[1]++; }       // ABS64 / GLOB_DAT
         }
     LOG("%s: reloc relative=%d relr=%u abs/glob=%d jump=%d%s", m->name, cnt[0], nrelr, cnt[1], cnt[2], nint ? "（含绑到先装模块的定义） | (some bound to an earlier module's definition)" : "");
-    if (nint > 8) LOG("%s: 共 %d 处绑到先装模块的定义 | %d bound to an earlier module's definition in all", m->name, nint, nint);
+    if (nint > 8) LOG("%s: %d bound to an earlier module's definition in all", m->name, nint);
 }
 
 // DM_LOADHASH=1 (diagnostics): after loading, output an address-independent sha256 per module, to prove that the load results of "early start / no early start" are byte-identical.
@@ -316,24 +378,7 @@ static void remap_at(module_t *m, vm_address_t to, const void *from, unsigned lo
     if (kr != KERN_SUCCESS || a != to) die("%s vm_remap %p → %#lx（%#lx 字节）失败：%d", m->name, from, (unsigned long)to, size, kr);
     if ((cur & need) != need) die("%s vm_remap 后权限 %#x，缺 %#x", m->name, cur, need);
 }
-#ifdef DM_SHELL
-// Shell (the App built by ios/tools/shell_build.sh, containing no game content at all): the module images are not in the main executable but in the
-// Frameworks/Guest.framework/Guest that users build themselves from their game files -- a dynamic library that holds only segments (written by dm/tools/guest_dylib.py), with the same section names as the embedded approach; below only the image header to fetch from is swapped.
-#include <dlfcn.h>
-#include <mach-o/dyld.h>
-static const struct mach_header_64 *image_mh(void) {
-    static const struct mach_header_64 *mh; if (mh) return mh;
-    char exe[4096]; uint32_t n = sizeof exe; if (_NSGetExecutablePath(exe, &n)) die("取不到可执行文件路径");
-    char *sl = strrchr(exe, '/'); if (!sl || (size_t)(sl - exe) + 40 > sizeof exe) die("可执行文件路径不对：%s", exe); strcpy(sl, "/Frameworks/Guest.framework/Guest");
-    if (!dlopen(exe, RTLD_NOW)) die("这个安装包里还没有游戏程序（%s）：先用 dm/tools/d2rm_pack.py 把你自己的游戏文件做进安装包再装。系统的说法：%s", exe, dlerror());
-    for (uint32_t i = 0; i < _dyld_image_count(); i++) if (strstr(_dyld_get_image_name(i), "/Guest.framework/Guest")) mh = (const struct mach_header_64 *)_dyld_get_image_header(i);
-    if (!mh) die("Guest 动态库已加载但找不到它的映像头");
-    fprintf(stderr, "boot: 模块映像取自 Guest 动态库 %s\n", exe); return mh;
-}
-#define IMAGE_MH image_mh()
-#else
 #define IMAGE_MH (&_mh_execute_header)
-#endif
 static void map_image(module_t *m, const char *dir) {
     (void)dir;
     char sx0[17], sx1[17], dm[17]; snprintf(sx0, sizeof sx0, "__dm%sx0", m->name); snprintf(sx1, sizeof sx1, "__dm%sx1", m->name); snprintf(dm, sizeof dm, "__DM%sW", m->name);
@@ -371,6 +416,8 @@ static void map_image(module_t *m, const char *dir) {
     char path[1024]; snprintf(path, sizeof path, "%s/%s.patched.bin", dir, m->name);
     size_t sz; uint8_t *raw = slurp(path, &sz);
     if (dm_resolution_mac_patch(m, raw, sz) < 0) die("Invalid Mac game resolution request");
+    int timing_extra = dm_timing_mac_prepare(m, raw, sz);
+    if (timing_extra < 0) die("Invalid high-refresh timing request");
     if (m->patch_off < 0) {
         // Patch area before the base: file = the first part of the image (text + ro + data) + patch area; bss and the key page are anonymous zero pages. The gap from the patch area's end to the base is left inaccessible (PROT_NONE)
         uint64_t pre = (uint64_t)-m->patch_off, fl = m->file_image_len;
@@ -387,14 +434,17 @@ static void map_image(module_t *m, const char *dir) {
         if (pre > m->patch_len && mprotect(a + m->patch_len, pre - m->patch_len, PROT_NONE)) die("%s mprotect gap", m->name);
         return;
     }
-    m->size = (sz + 0x3FFF) & ~0x3FFFull;
+    size_t sealed_size = (sz + 0x3FFF) & ~0x3FFFull;
+    m->size = sealed_size + timing_extra;
     m->base = mmap(NULL, m->size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
     if (m->base == MAP_FAILED) die("%s mmap", m->name);
-    memcpy(m->base, raw, sz); free(raw); install_key_page(m);
+    memcpy(m->base, raw, sz); free(raw);
+    dm_timing_mac_bind(m);
+    install_key_page(m);
     uint64_t rx = (m->text_end + 0x3FFF) & ~0x3FFFull;
     if (mprotect(m->base, rx, PROT_READ | PROT_EXEC)) die("%s mprotect text", m->name);
     uint64_t po = m->patch_off & ~0x3FFFull;
-    if (mprotect(m->base + po, m->size - po, PROT_READ | PROT_EXEC)) die("%s mprotect patch", m->name);
+    if (mprotect(m->base + po, sealed_size - po, PROT_READ | PROT_EXEC)) die("%s mprotect patch", m->name);
 }
 #endif
 

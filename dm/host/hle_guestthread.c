@@ -1,4 +1,4 @@
-// Host-initiated guest threads (host background work such as Granny pre-decoding needs to call the game's own allocator / locks and needs a complete SDK thread context).
+// Host-initiated guest threads (host background work that calls the game's own allocator / locks, such as the movie player's, needs a complete SDK thread context).
 // Approach: on a guest thread (e.g. before guest_main enters nnMain) call the SDK's nn::os::CreateThread / StartThread directly, with a host function as the entry --
 // the thread is created by the SDK, so ThreadType, thread handle and TLS slots are all in place, and the game's malloc / nn::os locks work as usual (the lock tag word holds this thread's guest handle).
 // Constraints: must be called on a guest thread (SDK thread creation goes through the SVC gate); not exposed to the game.
@@ -47,5 +47,5 @@ void dm_guest_spawn_selftest(void) {
     uint32_t thr_cur_handle(void); int mine = (int)thr_cur_handle();
     int ok = g_st.malloc_ok && g_st.lock_owned && g_st.handle && g_st.handle != mine;
     LOG("%s宿主客体线程自检：SDK malloc/free %s；互斥锁持有者是本线程 %s；线程句柄 %#x（主线程 %#x）", ok ? "" : "【红】",
-        g_st.malloc_ok ? "通" : "不通", g_st.lock_owned ? "是" : "否", g_st.handle, mine);
+        g_st.malloc_ok ? "ok" : "broken", g_st.lock_owned ? "yes" : "no", g_st.handle, mine);
 }

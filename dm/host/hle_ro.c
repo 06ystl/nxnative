@@ -28,6 +28,13 @@ HLE_FORCE("_ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmi", "不装 NRO", Result, h_
     (void)m; (void)image; (void)buf; (void)flag; static int red; if (!red++) LOG("【红】ro::LoadModule：宿主不装 NRO（缓冲 %#zx）", size); return RO_FAIL;
 }
 
+// SDK 19 adds a bool after the bind flag (Hades II imports only this form, for its Epic Online Services NRO)
+HLE_FORCE("_ZN2nn2ro10LoadModuleEPNS0_6ModuleEPKvPvmib", "不装 NRO", Result, h_ro_LoadModule2, void *m, const void *image, void *buf, size_t size, int flag, int b) {
+    (void)b; return h_ro_LoadModule(m, image, buf, size, flag);
+}
+
+HLE_FORCE("_ZN2nn2ro8FinalizeEv", "Initialize opened no ldr:ro session", void, h_ro_Finalize, void) { }
+
 HLE_FORCE("_ZN2nn2ro12UnloadModuleEPNS0_6ModuleE", "不装 NRO", void, h_ro_UnloadModule, void *m) { (void)m; }
 
 HLE_FORCE("_ZN2nn2ro18RegisterModuleInfoEPNS0_16RegistrationInfoEPKv", "不登记 NRR", Result, h_ro_RegisterModuleInfo, void *info, const void *nrr) {

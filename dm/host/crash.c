@@ -17,7 +17,7 @@ static _Atomic uint64_t g_watch_count;
 static _Atomic uint32_t g_watch_tick;
 static _Atomic int g_watch_pregame = 1;
 static _Atomic int g_watch_stage_idx;
-static char g_watch_stage[2][256] = {"启动", "启动"};
+static char g_watch_stage[2][256] = {"startup", "startup"};
 static unsigned g_watch_stall;
 static void (*g_dump_hook)(void);
 static void (*g_wait_dump)(void);
@@ -35,7 +35,7 @@ void crash_watch_progress(uint32_t tick, const char *stage) {
     atomic_fetch_add(&g_watch_count, 1);
     atomic_store(&g_watch_last_ns, watch_now_ns());
 }
-void crash_watch_frame(void) { if (atomic_load(&g_watch_pregame)) crash_watch_progress(0, "出图帧"); }
+void crash_watch_frame(void) { if (atomic_load(&g_watch_pregame)) crash_watch_progress(0, "present frame"); }
 void crash_watch_pregame_done(void) { atomic_store(&g_watch_pregame, 0); }
 void crash_watch_pregame_again(void) { atomic_store(&g_watch_pregame, 1); }   // Back from a run to the front end: count progress by presented frames again (diag.c)
 void crash_dump_now(const char *why);
@@ -43,7 +43,7 @@ static void *watchdog_main(void *arg) {
     (void)arg;
     for (;;) {
         usleep(250000);
-        // Read the last progress time first, then read now: reading in the opposite order, if the game thread happens to record progress between the two reads, last is newer than now and now − last underflows as unsigned into 「第 18446744073 秒起无进展」(no progress since second 18446744073),
+        // Read the last progress time first, then read now: reading in the opposite order, if the game thread happens to record progress between the two reads, last is newer than now and now − last underflows as unsigned into "no progress since second 18446744073",
         // which is misjudged on the spot as a hang and exits (accept inv_drag_out, local load 11, the watchdog thread was switched out between the two reads). Reading this way gives last ≤ now; and if the clock ever wraps around it is not judged either
         uint64_t last = atomic_load(&g_watch_last_ns), now = watch_now_ns();
         if (last > now) continue;
@@ -51,7 +51,7 @@ static void *watchdog_main(void *arg) {
         // Dump only after entering a run; at most 3 dumps per process, at least 10 seconds between two dumps (the loading screen and the pause menu also stop ticks, do not let them flood the log)
         { static int dumps; static uint64_t last_dump, dumped_for;
           if (g_watch_stall && !atomic_load(&g_watch_pregame) && atomic_load(&g_watch_tick) > 0 && now - last >= 1000000000ull && now - last < (uint64_t)g_watch_stall * 1000000000ull
-              && dumps < 3 && dumped_for != last && (!last_dump || now - last_dump >= 10000000000ull)) { dumps++; last_dump = now; dumped_for = last; crash_dump_now("进展停了 1 秒以上"); } }
+              && dumps < 3 && dumped_for != last && (!last_dump || now - last_dump >= 10000000000ull)) { dumps++; last_dump = now; dumped_for = last; crash_dump_now("progress stalled for over 1 second"); } }
         if (g_watch_stall && now - last >= (uint64_t)g_watch_stall * 1000000000ull) {
             uint64_t sec = (now - last) / 1000000000ull;
             int idx = atomic_load(&g_watch_stage_idx);
@@ -77,11 +77,15 @@ void crash_off(const char *tag, uint64_t a) {   // Also used by diag.c
     else if (dladdr((void *)a, &di) && di.dli_sname) fprintf(stderr, " %s%s%s+%#lx", tag, *tag ? "=" : "", di.dli_sname, (unsigned long)(a - (uint64_t)di.dli_saddr));
     else fprintf(stderr, " %s%s%#llx", tag, *tag ? "=" : "", a);
 }
-// Frame pointer backtrace: x29 chain [fp]=previous frame's fp, [fp+8]=return address; only 8-byte aligned, monotonically increasing frames are walked
+// Frame pointer backtrace: x29 chain [fp]=previous frame's fp, [fp+8]=return address; only 8-byte aligned, monotonically increasing frames are walked.
+// Each frame is read with vm_read_overwrite, which fails instead of faulting: code built without frame pointers keeps data in x29 (STEINS;GATE RE:BOOT's main+0x38921c: x29 = 0x430),
+// and a probe's backtrace there used to crash the host
 void dm_backtrace(uint64_t fp) {
     fprintf(stderr, "[dm] bt:");
     for (int i = 0; i < 32 && fp && !(fp & 7); i++) {
-        uint64_t nfp = ((uint64_t *)fp)[0], ra = ((uint64_t *)fp)[1];
+        uint64_t w[2]; vm_size_t got = 0;
+        if (vm_read_overwrite(mach_task_self(), (vm_address_t)fp, sizeof w, (vm_address_t)w, &got) != KERN_SUCCESS || got != sizeof w) break;
+        uint64_t nfp = w[0], ra = w[1];
         off("", ra);
         if (nfp <= fp) break;
         fp = nfp;
@@ -137,7 +141,7 @@ static void on_crash(int sig, siginfo_t *si, void *uc_) {
     // If it still cannot be taken after 1 s, write a single line with write() (pc / lr as module offsets) and exit. When this thread itself holds the lock, ftrylockfile still succeeds (file locks are recursive), unaffected
     for (int i = 0; ftrylockfile(stderr); i++) {
         if (i < 100) { usleep(10000); continue; }
-        char b[256]; int n = snprintf(b, sizeof b, "[dm] CRASH sig=%d（stderr 被占用 1 s，现场不打 | stderr held for 1 s, no dump）", sig);
+        char b[256]; int n = snprintf(b, sizeof b, "[dm] CRASH sig=%d (stderr held for 1 s, no dump)", sig);
         uint64_t at[2] = {uc->uc_mcontext->__ss.__pc, uc->uc_mcontext->__ss.__lr};
         for (int k = 0; k < 2; k++) { module_t *m = module_of((void *)at[k]);
             n += m ? snprintf(b + n, sizeof b - n, " %s=%s+%#llx", k ? "lr" : "pc", m->name, at[k] - (uint64_t)m->base) : snprintf(b + n, sizeof b - n, " %s=%#llx", k ? "lr" : "pc", at[k]); }
@@ -205,4 +209,7 @@ void crash_install(void) {
         pthread_detach(th);
     }
     sigaction(SIGSEGV, &sa, 0); sigaction(SIGBUS, &sa, 0); sigaction(SIGILL, &sa, 0); sigaction(SIGTRAP, &sa, 0);
+    // abort() too (an assertion or an uncaught exception in the host or a framework): Big Brain Academy: Brain vs. Brain died once with SIGABRT 11 minutes into a run with nothing
+    // in the log and no crash report, so where it came from was lost
+    sigaction(SIGABRT, &sa, 0);
 }

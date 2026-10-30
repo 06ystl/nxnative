@@ -26,7 +26,7 @@ class SharedBuildTests(unittest.TestCase):
         self.root = Path(temp.name).resolve()
         self.nsp_dir = self.root / "玩家's game"; self.nsp_dir.mkdir()
         self.g = game.load('010015100B514000')
-        self.chain = re.search(r'#define DMSH_CHAIN "([^"]+)"', self.g.table('dmsh_chain.h').read_text()).group(1)
+        self.chain = re.search(r'#define DMSH_CHAIN "([^"]+)"', (REPO / 'dm/gfx/nvn/dmsh_chain.h').read_text()).group(1)
         (self.nsp_dir / f'Base [{self.g.id}][v0].nsp').write_bytes(b'synthetic fixture')
         (self.nsp_dir / 'Update [010015100B514800][v327680].nsp').write_bytes(b'synthetic fixture')
         self.keys = self.root / 'fixture.keys'; self.keys.write_text('# no key values\n')
@@ -50,7 +50,7 @@ class SharedBuildTests(unittest.TestCase):
             Path(log).write_text('synthetic command output\n')
             if Path(cmd[1]).name in ('dmsh_chain.py', 'c1_guard.py'):
                 pass
-            elif Path(cmd[1]).name == 'dmsh_build.py':
+            elif Path(cmd[1]).name == 'own_compilers.py':
                 self.events.append('shaders')
                 self.assertEqual(Path(env['MAIN']), self.work / 'extract' / self.g.get('package') / 'ExeFS/main')
                 if self.fail_target == 'shaders': raise build.nsp.BuildError('synthetic shader failure')
@@ -77,7 +77,7 @@ class SharedBuildTests(unittest.TestCase):
             ('build_nx_extract', {'return_value': self.root / 'nx_extract'}),
             ('extract', {'side_effect': mock_extract}),
             ('extract_aoc', {'return_value': None}),
-            ('rewrite', {}), ('split_shaders', {}), ('run', {'side_effect': mock_run}),
+            ('rewrite', {}), ('split_shaders', {'return_value': None}), ('build_mismatch', {'return_value': []}), ('chain_header', {'side_effect': lambda *args: self.events.append('chain-header')}), ('chain_tables', {'return_value': True}), ('run', {'side_effect': mock_run}),
             ('can_clone', {'return_value': False}), ('free_gb', {'return_value': 1000}),
             ('check_prereqs', {}), ('say', {})]
         for name, opts in patches:
@@ -93,7 +93,7 @@ class SharedBuildTests(unittest.TestCase):
         return build.parse_args([str(self.nsp_dir), '-k', str(self.keys), '--app-name', 'Fixture', *options])
 
     def shader_calls(self):
-        return [c for c in self.mocks['run'].call_args_list if Path(c.args[0][1]).name == 'dmsh_build.py']
+        return [c for c in self.mocks['run'].call_args_list if Path(c.args[0][1]).name == 'own_compilers.py']
 
     def test_both_processes_shared_inputs_once_and_cleans_only_after_packaging(self):
         app = self.root / 'custom/Mario.app'; ipa = self.root / 'custom/Mario.ipa'
@@ -120,8 +120,8 @@ class SharedBuildTests(unittest.TestCase):
         self.assertNotIn('IOSOUT', self.shader_calls()[0].kwargs['env'])
         self.assertNotIn('ios', self.events)
         tools = [Path(c.args[0][1]).name for c in self.mocks['run'].call_args_list]
-        self.assertLess(tools.index('dmsh_chain.py'), tools.index('dmsh_build.py'))
-        self.assertLess(tools.index('dmsh_build.py'), tools.index('c1_guard.py'))
+        self.assertLess(self.events.index('chain-header'), self.events.index('shaders'))
+        self.mocks['chain_tables'].assert_called_once()
 
     def test_ios_only_needs_no_mac_app_tools(self):
         build.main(self.args('--target', 'ios'))
@@ -129,6 +129,14 @@ class SharedBuildTests(unittest.TestCase):
         self.mocks['check_prereqs'].assert_called_once()
         self.assertEqual(len(self.shader_calls()), 1)
         self.assertNotIn('macos', self.events)
+
+    def test_wrong_module_build_stops_before_rewriting_and_keeps_extraction(self):
+        self.mocks['build_mismatch'].return_value = ['main build ID differs']
+        with self.assertRaisesRegex(build.nsp.BuildError, 'main build ID differs'):
+            build.main(self.args())
+        self.mocks['rewrite'].assert_not_called()
+        self.mac_pack.assert_not_called()
+        self.assertTrue((self.work / 'extract').is_dir())
 
     def test_mac_failure_still_builds_ipa_and_retains_shared_inputs(self):
         self.fail_target = 'macos'

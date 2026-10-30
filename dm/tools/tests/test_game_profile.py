@@ -47,5 +47,31 @@ class ResolutionProfileTests(unittest.TestCase):
             game.header(self.profile)
 
 
+class TimingProfileTests(unittest.TestCase):
+    def setUp(self):
+        self.profile = copy.deepcopy(game.load('01007EF00011E000'))
+        self.row = self.profile.values('mac_frame_step')[0].copy()
+
+    def test_profiles_without_adapter_keep_empty_table(self):
+        for profile in game.all_games():
+            if not profile.values('mac_frame_step'):
+                self.assertIn('#define DM_GAME_MAC_FRAME_STEP {0}', game.header(profile))
+
+    def test_duplicate_adapter_is_rejected(self):
+        self.profile.rows.append(('mac_frame_step', self.row))
+        with self.assertRaisesRegex(ValueError, 'duplicate'):
+            game.header(self.profile)
+
+    def test_unverified_build_and_invalid_fields_are_rejected(self):
+        for field, value in [(0, '0'*32), (1, '3'), (2, '-1'), (3, '4096'), (4, '3'), (5, '0')]:
+            with self.subTest(field=field, value=value):
+                profile = copy.deepcopy(self.profile)
+                row = self.row.copy(); row[field] = value
+                profile.rows = [(k,v) for k,v in profile.rows if k != 'mac_frame_step']
+                profile.rows.append(('mac_frame_step', row))
+                with self.assertRaises(ValueError):
+                    game.header(profile)
+
+
 if __name__ == '__main__':
     unittest.main()

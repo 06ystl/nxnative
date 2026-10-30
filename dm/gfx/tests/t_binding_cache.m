@@ -1,13 +1,11 @@
 // Exercise pool lookup lifetime and real GPU binding changes with caches on/off.
 #define NVN_OPTIMIZATION_TEST 1
 #include "../nvn/nvn_mtl.m"
-int prog_key(const prog_t *p, unsigned s, uint8_t k[8]) { (void)p; (void)s; memset(k, 0, 8); return 0; }
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
 module_t g_mod[MAX_MOD]; int g_nmod;
 void svc_thread_dump(void) {}
 uint64_t now_ns(void) { return bp_now(); }
-uint64_t nvn_new_serial(void) { static uint64_t n = 1000000; return ++n; }
 static int checks, failed;
 #define EXPECT(label, expected, actual) do { uint64_t a = (actual), e = (expected); checks++; \
     if (a != e) { failed++; printf("FAIL %s: expected %llu, got %llu\n", label, e, a); } } while (0)
@@ -67,12 +65,12 @@ static void bind(id e, int hidden, int tint) {
     enc_r_args(e, MTLRenderStageFragment, tints.gpuAddress, 30);
 }
 static void render(int mode, id<MTLBuffer> __strong out[2]) {
-    g_test_binding_cache = mode; mtl_sub_begin();
+    g_vbuf_cache = mode; mtl_sub_begin();
     for (int pass = 0; pass < 2; pass++) {
-        // Perturb the persistent table between encoders: a new encoder must
-        // reapply its first bindings even when their values match the last draw.
-        [g_vt setAddress:vertices.gpuAddress + 48 atIndex:16];
-        [g_vt setAddress:tints.gpuAddress + tint_stride atIndex:0];
+        // Perturb the persistent table between encoders: the next draw must
+        // restore its bindings after every intervening table write.
+        enc_r_vbuf(nil, 16, vertices.gpuAddress + 48);
+        enc_r_vbuf(nil, 0, tints.gpuAddress + tint_stride);
         MTLRenderPassDescriptor *rp = backend_render_pass();
         rp.colorAttachments[0].texture = color; rp.colorAttachments[0].loadAction = MTLLoadActionClear;
         rp.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -84,8 +82,8 @@ static void render(int mode, id<MTLBuffer> __strong out[2]) {
             bind(e, 0, 2); enc_r_scissor(e, (MTLScissorRect){0, 0, 8, 2});
             enc_r_draw(e, MTLPrimitiveTypeTriangle, 0, 3);
         } else for (int k = 0; k < 8; k++) {
-            if (k == 6) g_test_binding_cache = 0;
-            if (k == 7) g_test_binding_cache = mode;
+            if (k == 6) g_vbuf_cache = 0;
+            if (k == 7) g_vbuf_cache = mode;
             bind(e, k == 2, k < 3 || k == 6 ? 1 : 2);
             // Both wrapper types write the same vertex-table slot. The next
             // draw must restore green rather than reusing a stale cache entry.
