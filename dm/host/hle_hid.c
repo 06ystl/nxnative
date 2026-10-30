@@ -253,7 +253,7 @@ static int six_state(dm_sixaxis_state *out, const uint32_t *h) {
     int ok = dm_motion_read(out, atomic_load(&g_six_fusion[i]));
     static _Atomic unsigned reported;
     if (ok && !(atomic_load(&reported) & (1u << i)) && !(atomic_fetch_or(&reported, 1u << i) & (1u << i)))
-        LOG("Phone motion reached the game (%s sensor)", i ? "handheld" : "full-key");
+        LOG("Motion reached the game (%s sensor)", i ? "handheld" : "full-key");
     return ok;
 }
 HLE_FORCE("_ZN2nn3hid23GetSixAxisSensorHandlesEPNS0_19SixAxisSensorHandleEiRKjNS_4util10BitFlagSetILi32ENS0_12NpadStyleTagEEE", "六轴句柄",

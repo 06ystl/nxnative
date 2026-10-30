@@ -8,6 +8,7 @@
 #include "dm_input.h"
 #include "gamepad_mac.h"
 #include "rumble_mac.h"
+#include "motion_controller_mac.h"
 
 static GCController *g_mac_controller;
 static GCExtendedGamepad *g_mac_profile;
@@ -67,6 +68,7 @@ static void pad_select(NSArray<GCController *> *controllers) {
             fprintf(stderr, "[dm] Mac controller connected: %s (%s), system A/B/X/Y mapping\n",
                     next.vendorName.UTF8String ?: "Unknown", next.productCategory.UTF8String ?: "Unknown");
     } else if (changed) fprintf(stderr, "[dm] Mac controller disconnected; keyboard remains available\n");
+    dm_controller_motion_attach(next);
     pad_read(g_mac_profile);
 }
 

@@ -186,6 +186,7 @@ or shell quotes. The settings below remain supported:
 | `DM_WINDOW`, `DM_AUDIO` | Native window and audio output; the packaged Mac app supplies both automatically. `dmhost` diagnostics opt in with `1`; `DM_AUDIO=0` selects the silent sink |
 | `DM_GAME_RES` | BotW 1.9.0 Mac: `1280x720` or `1920x1080`, including the scene, HUD and output. Unset retains native mode-dependent sizes. The local 1080p app bundles `1920x1080`; a user setting overrides it. D2R retains its existing KRES size parameters |
 | `DM_RUMBLE_GAIN` | Mac controller output multiplier, any finite nonnegative value, default `1`. `3` strengthens weak effects; `20` brings weaker waveform segments up to full API intensity; `0` mutes. Output remains in the system's 0–1 range. Applies after the Xbox response; restart after changing |
+| `DM_MOTION_SOURCE` | Mac gyro source: unset, empty or `controller` uses the current 1P controller; `phone` enables the phone connection menu and saved DSU connection. Restart after changing. Sources never fall back to each other |
 
 `DM_GAME` (tools) and `GAME` (Make) select the profile at build time. A packaged
 app already contains its profile; these do not switch games at launch.
@@ -388,9 +389,56 @@ outputs, long holds, renewal, zero/focus/
 disconnect/shutdown, background suppression and engine errors. Motor feel and device
 capabilities require a connected controller.
 
+### Mac controller motion
+
+Leave `DM_MOTION_SOURCE` out of the Mac app's user `env.txt` to use the current
+1P controller's gyro. `DM_MOTION_SOURCE=controller` explicitly selects the same
+mode. Enable motion controls in the game, then keep the controller still,
+buttons facing up, for one second after connection. **Motion → Controller motion
+connected** confirms calibration; **Calibrate…** measures drift and resets heading.
+Controller changes follow the same 1P selection as buttons and rumble.
+
+The connection must expose `GCMotion.hasRotationRate` and usable acceleration
+through macOS GameController. A controller without these reports **Controller
+gyro unavailable**. Ordinary Xbox controllers have no gyro. Missing or stale
+controller data does not select the phone automatically. To use a phone, set
+`DM_MOTION_SOURCE=phone` and restart; only that mode honors saved phone connections.
+Invalid source values log an error and select `controller`.
+
+The original GameSir Nova Lite (启明星) has no motion control according to its
+[official specifications](https://gamesir.com/products/gamesir-nova-lite/buy#specs).
+It can appear as a DualShock 4 with `hasRotationRate` set and fixed compatibility
+values, so the product category or capability flag alone does not establish a
+physical gyro. One such USB connection returned raw gyro zeros and fixed
+acceleration; GameController reported a constant 0.492691 g. These values are
+not rescaled into a connected sensor. Use phone mode with this model. With
+unusable calibration data, the menu reports **Waiting for usable controller
+motion data** instead of asking the user to keep holding still.
+
+`motion_controller_mac.m` activates manually controlled sensors only while the
+game window is eligible and controller mode is selected. It repairs callbacks
+on eligible refresh, stops the old sensor on 1P changes and rejects delayed
+callbacks from retired devices. Native acceleration (including gravity) in g and
+radians/s use Apple's physical axes directly, with rates converted to degrees/s
+at the shared `motion_filter_mac.h` input. Both native and phone paths use the
+same calibrated quaternion fusion, Switch row-basis matrix, units and snapshot
+contract. Repeated game reads do not integrate again. After 500 ms without fresh
+native samples the game receives no connected sensor; returning samples or
+window reactivation require fresh calibration. Scripted `Shake` remains available.
+No raw HID sensor fallback is included for controllers whose GameController
+motion reports unusable data.
+
+`t_motion_mac` exercises source defaults and explicit phone selection, the real
+1P/HID path with simulated sensor endpoints, signed quarter turns on all three
+axes, unit conversion, calibration (including rejection of Nova Lite compatibility values),
+split gravity/user acceleration, stale and
+nonfinite samples, same-pad callback repair, focus, hotplug and source isolation.
+`t_gamepad_mac` retains the existing focus and button/stick coverage. A physical
+gyro-capable controller is needed to confirm that model's axis mapping and feel.
+
 ### Mac phone motion
 
-Use an iPhone as the motion part of the same controller that supplies the game's buttons and sticks. In Breath of the Wild this provides gyro aiming and controller motion for apparatus puzzles, including while playing in handheld mode. The Mac app's **Motion** menu is available in newly rebuilt apps; no environment variables are needed.
+Set `DM_MOTION_SOURCE=phone` in the Mac app's user `env.txt` and restart to use an iPhone as the motion part of the same controller that supplies buttons and sticks. This mode enables **Motion → Connect Phone…** and restores saved phone connections; controller mode leaves those connections inactive. In Breath of the Wild it provides gyro aiming and controller motion for apparatus puzzles, including while playing in handheld mode.
 
 1. Install [MotionSourceiOS 1.1.0](https://github.com/shiftinv/MotionSourceiOS/releases/tag/v1.1.0) on the iPhone. Its released IPA supports iOS 11 or later. Allow Local Network access and connect the phone and Mac to the same local network.
 2. In MotionSource select **Portrait**, enable the accelerometer and tap **Start Server**. The default port is `26760`; its default 50 Hz sensor rate works with the client.
@@ -423,7 +471,8 @@ The Mac transport sets `SO_NOSIGPIPE` on its own UDP socket. Failed sends are re
 Run the focused regression (loopback UDP sockets must be permitted):
 
 ```
-make -C dm/host/tests GAME=01007EF00011E000 build/t_motion_dsu
+make -C dm/host/tests GAME=01007EF00011E000 build/t_motion_mac build/t_motion_dsu
+dm/host/tests/build/t_motion_mac
 dm/host/tests/build/t_motion_dsu
 ```
 
