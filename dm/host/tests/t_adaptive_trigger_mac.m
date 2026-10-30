@@ -1,6 +1,8 @@
 // Only simulated endpoints: this test never enumerates physical controllers.
 #include "../adaptive_trigger_mac.m"
 static int checks,failed,reads;
+static dm_trigger_slope usb_effect[2];static unsigned usb_writes[2];
+static void usb_output(unsigned side,const dm_trigger_slope *effect){usb_effect[side]=*effect;usb_writes[side]++;}
 static dm_bow_snapshot sample;
 static dm_shield_snapshot shield;
 static dm_shield_snapshot read_shield(void) { return shield; }
@@ -89,7 +91,17 @@ int main(void) {@autoreleasepool {
     left.value=1;tick();CHECK(left.high==.28f,"next shield pull has no leftover impact");
     dm_adaptive_trigger_set_active(0);CHECK(g_left_sent==-1,"window/session loss clears both triggers");
     dm_adaptive_trigger_set_active(1);tick();stops=left.stops;dm_adaptive_trigger_attach(nil);CHECK(left.stops==stops+1,"disconnect clears left trigger too");
-    dm_adaptive_trigger_attach((id)c);tick();dm_adaptive_trigger_shutdown();CHECK(!dm_adaptive_trigger_available()&&g_sent==-1,"shutdown releases effect");
+    dm_adaptive_trigger_attach((id)c);sample=(dm_bow_snapshot){DM_BOW_READY,0,1,2,3};t.value=0;left.value=0;tick();
+    int native_writes=t.writes,native_stops=t.stops;
+    dm_adaptive_trigger_set_usb_output(usb_output);tick();
+    CHECK(usb_writes[0]&&usb_writes[1]&&usb_effect[1].enabled&&usb_effect[1].high==.35f,"USB ownership receives the accepted bow preload parameters");
+    CHECK(t.writes==native_writes&&t.stops==native_stops,"entering USB never emits conflicting native trigger reports");
+    sample.phase=DM_BOW_DRAW;sample.charge=1;t.value=1;tick();
+    CHECK(usb_effect[1].high>.35f&&t.writes==native_writes,"charge updates use only the shared USB report owner");
+    dm_adaptive_trigger_set_active(0);CHECK(!usb_effect[0].enabled&&!usb_effect[1].enabled&&t.stops==native_stops,"pause releases USB effects without native writes");
+    dm_adaptive_trigger_set_usb_output(NULL);dm_adaptive_trigger_set_active(1);t.value=0;tick();
+    CHECK(t.writes==native_writes+1&&t.high==.35f,"leaving USB restores native trigger output and invalidates its cached state");
+    dm_adaptive_trigger_shutdown();CHECK(!dm_adaptive_trigger_available()&&g_sent==-1,"shutdown releases effect");
     before=reads;tick();CHECK(reads==before,"no work after shutdown");
     printf("Adaptive trigger: %d checks, %d failures\n",checks,failed);return !!failed;
 }}

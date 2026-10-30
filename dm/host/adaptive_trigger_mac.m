@@ -13,13 +13,32 @@ static int g_active, g_closed, g_sent = -1, g_rearm = 1;
 static uint64_t g_sampled;
 static float g_charge;
 static dm_bow_snapshot g_previous;
+static dm_trigger_output_fn g_usb_output;
+static int g_native_stale;
+static void write_slope(unsigned side,dm_trigger_slope effect) {
+    if(g_usb_output){g_usb_output(side,&effect);return;}
+    if(g_native_stale){[g_left_trigger setModeOff];[g_right_trigger setModeOff];g_native_stale=0;}
+    GCDualSenseAdaptiveTrigger *trigger=side?g_right_trigger:g_left_trigger;
+    if(effect.enabled)[trigger setModeSlopeFeedbackWithStartPosition:effect.start endPosition:effect.end startStrength:effect.low endStrength:effect.high];
+    else [trigger setModeOff];
+}
+void dm_adaptive_trigger_set_usb_output(dm_trigger_output_fn output) {
+    if(g_usb_output==output)return;
+    dm_trigger_slope off={0};
+    if(g_usb_output){g_usb_output(0,&off);g_usb_output(1,&off);}
+    g_usb_output=output;
+    // Enter USB without emitting a native report: that report can switch the
+    // device back to emulated rumble and suppress its audio actuator channels.
+    if(output){output(0,&off);output(1,&off);g_native_stale=1;}
+    g_sent=g_left_sent=-1;
+}
 
 static void trigger_off(void) {
-    if (g_sent >= 0) [g_right_trigger setModeOff];
+    if (g_sent >= 0) write_slope(1,(dm_trigger_slope){0});
     g_sent = -1; g_charge = 0;
 }
 static void shield_off(void) {
-    if (g_left_sent >= 0) [g_left_trigger setModeOff];
+    if (g_left_sent >= 0) write_slope(0,(dm_trigger_slope){0});
     g_left_sent = -1; g_impact_until = 0;
 }
 static void shield_tick(uint64_t now) {
@@ -43,8 +62,7 @@ static void shield_tick(uint64_t now) {
     if (!shield.guarding && !pulse) { shield_off(); return; }
     if (pulse == g_left_sent) return;
     float impact = pulse / 6.f;
-    [g_left_trigger setModeSlopeFeedbackWithStartPosition:0.f endPosition:1.f
-                                          startStrength:.10f + .06f*impact endStrength:.28f + .15f*impact];
+    write_slope(0,(dm_trigger_slope){1,0,1,.10f + .06f*impact,.28f + .15f*impact});
     g_left_sent = pulse;
 }
 static void reset_pull(void) {
@@ -104,10 +122,9 @@ void dm_adaptive_trigger_tick(uint64_t now) {
     if (level == g_sent) return;
     float q = level / 32.f;
     // Full travel avoids the old 15% dead zone and the release beyond 85%.
-    // Keep native slope mode throughout the pull; do not stop/restart on updates.
+    // Keep slope feedback throughout the pull; do not stop/restart on updates.
     // Independent of DM_RUMBLE_GAIN (handle vibration).
-    [g_right_trigger setModeSlopeFeedbackWithStartPosition:0.f endPosition:1.f
-                                          startStrength:.10f + .05f*q endStrength:.35f + .20f*q];
+    write_slope(1,(dm_trigger_slope){1,0,1,.10f + .05f*q,.35f + .20f*q});
     g_sent = level;
 }
 void dm_adaptive_trigger_shutdown(void) { reset_pull(); g_closed = 1; g_active = 0; g_right_trigger = nil; g_left_trigger = nil; }

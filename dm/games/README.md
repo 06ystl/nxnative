@@ -134,17 +134,18 @@ Verify actual guarding against lock-on, two-handed weapons, bow aiming and menus
 Verify durability loss during a real block before enabling the extra impact.
 Unknown main builds lose this row when deriving a profile.
 
-### Mac player-footstep audio layout
+### Mac footstep audio layout
 
-`mac_audio_footsteps` starts with a verified main build ID and a resource-name
-prefix. Its 25 numeric columns follow `dm_foot_layout` in
-`dm/host/audio_footsteps_mac.h`: gameplay/player globals and lifecycle, observation
-registers and source-actor field, event generation and resource name, child-list
-layout and active phases, sound handle/generation/state, and the WavePlayer
-vtable/FWAV field. Globals and the vtable are main-relative; fields are
-object-relative. The observation result is a pointer/generation handle.
+`mac_audio_footsteps` starts with a verified main build ID and an event-name token.
+Its 23 numeric columns follow `dm_foot_layout` in
+`dm/host/audio_footsteps_mac.h`: gameplay/player globals and lifecycle, event
+register, event generation and resource name, child-list layout and active
+phases, sound handle/generation/state, and the WavePlayer vtable/FWAV field.
+Globals and the vtable are main-relative; fields are object-relative. The token
+matches within the event name so player and NPC footsteps use the same policy.
 
-A matching `OBS_PLAYER_FOOTSTEP` entry in that build's `patches.py` must preserve
-the original instruction. Verify the initiating actor against the player, and
-follow both immediate and delayed recordings. Unknown derived builds lose this
-row; games without it keep ordinary rumble.
+A matching `OBS_AUDIO_EVENT` entry in that build's `patches.py` preserves the
+original instruction after common event creation. Verify immediate and delayed
+sources against the SDK decoder's encoded buffer addresses. Source selection
+carries no amplitude or actor priority: the SDK voice/mix commands determine the
+captured signal. Unknown derived builds lose this row and keep ordinary rumble.

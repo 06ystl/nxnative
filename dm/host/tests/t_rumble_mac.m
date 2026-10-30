@@ -125,6 +125,21 @@ static void test_gain_config(void) {
     }
     unsetenv("DM_RUMBLE_GAIN");
 }
+static void test_audio_gain_config(void) {
+    unsetenv("DM_AUDIO_HAPTICS_GAIN");CHECK(audio_read_gain()==.3f,"unset audio gain preserves the existing default");
+    const char *valid[]={"0","0.3","2","6","10","20","100"};
+    const float expected[]={0,.3f,2,6,10,20,100};
+    for(unsigned i=0;i<sizeof expected/sizeof *expected;i++) {
+        setenv("DM_AUDIO_HAPTICS_GAIN",valid[i],1);
+        CHECK(audio_read_gain()==expected[i],"audio gain accepts old settings and stronger footsteps");
+    }
+    const char *invalid[]={"","-1","nan","inf","1e999","6x"};
+    for(unsigned i=0;i<sizeof invalid/sizeof *invalid;i++) {
+        setenv("DM_AUDIO_HAPTICS_GAIN",invalid[i],1);
+        CHECK(audio_read_gain()==.3f,"invalid audio gain retains the existing fallback");
+    }
+    unsetenv("DM_AUDIO_HAPTICS_GAIN");
+}
 static void test_hid(void) {
     uint32_t id=0, handles[3]={0xdeadbeef,0xdeadbeef,0xdeadbeef};
     CHECK(!h_hid_VibPermit(),"unimplemented frontends retain no-vibration behavior");
@@ -301,6 +316,6 @@ static void test_audio_ownership(void) {
     CHECK(test_audio_closed>0,"lost stream disposed");attach(nil);
 }
 int main(void) { @autoreleasepool {
-    test_gain_config();test_hid();test_concurrent_publication();test_split();test_xbox_response();test_output_gain();test_audio_ownership();test_shared_and_errors();
+    test_gain_config();test_audio_gain_config();test_hid();test_concurrent_publication();test_split();test_xbox_response();test_output_gain();test_audio_ownership();test_shared_and_errors();
     printf("RUMBLE_MAC checks=%d failed=%d\n",checks,failed);return failed!=0;
 } }

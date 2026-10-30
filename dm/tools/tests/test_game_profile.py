@@ -139,7 +139,7 @@ class MacAudioFootstepProfileTests(unittest.TestCase):
         profile = game.load('01007EF00011E000')
         row = profile.values('mac_audio_footsteps')[0]
         self.assertIn('DM_GAME_MAC_AUDIO_FOOTSTEPS', game.header(profile))
-        for field, value in [(0, '0'*32), (1, ''), (1, 'A'*64), (2, '-1'), (6, '256'), (8, '31'), (9, '32'), (17, '5')]:
+        for field, value in [(0, '0'*32), (1, ''), (1, 'A'*64), (2, '-1'), (6, '256'), (8, '31'), (15, '5')]:
             with self.subTest(field=field):
                 candidate = copy.deepcopy(profile)
                 bad = row.copy(); bad[field] = value

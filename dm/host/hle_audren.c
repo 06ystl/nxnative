@@ -13,7 +13,7 @@
 #include "hle.h"
 #include <TargetConditionals.h>
 #if TARGET_OS_OSX
-#include "audio_footsteps_mac.h"
+#include "audio_haptics_dsp_mac.h"
 #endif
 #include <math.h>
 #include <stdatomic.h>
@@ -228,9 +228,6 @@ static int capture(const uint8_t *cl, size_t len, int16_t *dst) {
                 dst[s] = (int16_t)v; loud |= (uint64_t)v;
             }
 
-#if TARGET_OS_OSX
-            dm_footsteps_render(nout, 48000);
-#endif
             atomic_fetch_add(&g_frames, 1); if (loud) atomic_fetch_add(&g_nonsilent, 1);
             uint64_t f = atomic_load(&g_frames); if (f == 200 || f % 12000 == 0) LOG("audren：已渲 %llu 帧，其中有声 %llu 帧", (unsigned long long)f, (unsigned long long)atomic_load(&g_nonsilent));
             return (int)nout;
@@ -310,7 +307,13 @@ static Result render_once(uint8_t *sys, int16_t *dst, int *nout) {
     unlock(sys + mu_off);
     atomic_fetch_add(&g_renders, 1);
     uint64_t proc[16] __attribute__((aligned(16))) = {0};   // CommandListProcessor (0x58 bytes; 0x60 in SDK 21, whose Process reads +0x58)
+#if TARGET_OS_OSX
+    dm_audio_haptics_begin(cl, n);
+#endif
     tmax(proc, 0xffffffffu); setup(proc, cl, n); process(proc);
+#if TARGET_OS_OSX
+    dm_audio_haptics_end();
+#endif
     if (dst) *nout = capture(cl, n, dst);
     // render time per frame (budget: 5 ms per frame): mean / max every 2000 frames
     static uint64_t sum, mx, cnt; uint64_t d = now_ns() - t0; sum += d; if (d > mx) mx = d;

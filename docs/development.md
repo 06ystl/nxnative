@@ -186,8 +186,8 @@ or shell quotes. The settings below remain supported:
 | `DM_WINDOW`, `DM_AUDIO` | Native window and audio output; the packaged Mac app supplies both automatically. `dmhost` diagnostics opt in with `1`; `DM_AUDIO=0` selects the silent sink |
 | `DM_GAME_RES` | BotW 1.9.0 Mac: `1280x720` or `1920x1080`, including the scene, HUD and output. Unset retains native mode-dependent sizes. The local 1080p app bundles `1920x1080`; a user setting overrides it. D2R retains its existing KRES size parameters |
 | `DM_RUMBLE_GAIN` | Mac controller output multiplier, any finite nonnegative value, default `1`. `3` strengthens weak effects; `20` brings weaker waveform segments up to full API intensity; `0` mutes. Output remains in the system's 0–1 range. Applies after the Xbox response; restart after changing |
-| `DM_AUDIO_HAPTICS` | Mac: `1` enables original player-footstep audio on one USB DualSense for a verified game build. Default off. Replaces that controller’s ordinary grip rumble; adaptive triggers remain enabled. Unavailable USB falls back to game rumble. Restart after changing |
-| `DM_AUDIO_HAPTICS_GAIN` | Audio-haptics gain, default `0.3`, range `0`–`2`; independent of `DM_RUMBLE_GAIN`. Output peaks are clamped to ±0.5. Restart after changing |
+| `DM_AUDIO_HAPTICS` | Mac: `1` enables game-processed player/NPC footstep audio on one USB DualSense for a verified game build. Default off. Replaces that controller’s ordinary grip rumble; adaptive triggers remain enabled. Unavailable USB falls back to game rumble. Restart after changing |
+| `DM_AUDIO_HAPTICS_GAIN` | Audio-haptics gain, default `0.3`, any finite nonnegative multiplier; independent of `DM_RUMBLE_GAIN`. Try `10` for quiet footsteps. Output uses the full normalized PCM range (±1), with no extra half-scale clamp; higher gain can clip at full scale. Restart after changing |
 | `DM_MOTION_SOURCE` | Mac gyro source: unset, empty or `controller` uses the current 1P controller; `phone` enables the phone connection menu and saved DSU connection. Restart after changing. Sources never fall back to each other |
 | `DM_CHEATS` | BotW 1.9.0 Mac only: comma-separated `health`, `stamina`, `durability`, `arrows`; unset, empty or `none` disables all. Restart after changing. Durability refills can persist in saves |
 
@@ -355,7 +355,7 @@ runners into `run` without executing a test twice.
 | Controller/phone motion | `motion_mac.m`, `motion_controller_mac.m`, `motion_dsu_mac.c`, shared `motion_filter_mac.h` | `run-mac-input` |
 | Ordinary grip rumble | `rumble_mac.m`, with SDK vibration ABI in `hle_hid.c` | `run-mac-input` |
 | Adaptive R2/L2 triggers | `adaptive_trigger_mac.m`, read-only `bow_state_mac.c` / `shield_state_mac.c` | `run-mac-bow` |
-| Original footstep audio haptics | `audio_footsteps_mac.c` → `audio_wave.c` → `audio_haptics_usb_mac.c` | `run-audio-haptics` |
+| Original footstep audio haptics | `audio_footsteps_mac.c` source identity → `audio_haptics_dsp_mac.c` capture → `audio_haptics_usb_mac.c` | `run-audio-haptics` |
 | Resolution, frame timing and cheats | `resolution_mac.c`, `timing_mac.c`, `cheats_mac.c`; loader binds verified profiles | `run-mac-input`, `run-cheats` |
 
 Fixed game addresses belong in the game's build-gated profile. Shared output
@@ -468,7 +468,7 @@ a scheduling gap. Only changed 1/32 charge buckets are sent. Full charge holds a
 plateau; it does not grow indefinitely. This is independent of `DM_RUMBLE_GAIN`.
 No game code, frame timing or shader inputs are modified for this feature.
 
-The native slope remains enabled during charge updates. Released R2 (value <=
+The feedback slope remains enabled during charge updates. Released R2 (value <=
 0.02) resets to the light baseline even if game animation still reports a draw.
 A draw/reload-to-ready transition while held is cancellation, not a new idle
 preload. Cancellation, invalid state, device/session changes or a changed player/
@@ -502,8 +502,8 @@ make -C dm/host/tests GAME=01007EF00011E000 run-mac-bow
 
 USB slope/release effects and a normal haptic pulse were confirmed by the user on
 2026-10-30. The user accepted v4.9's preload, full-travel slope and charge ramp
-in-game. Bluetooth acceptance still requires manual testing. This adapter does
-not synthesize high-definition haptic audio.
+in-game. USB audio haptics and R2/L2 resistance were also confirmed together in
+v4.12.2. Bluetooth acceptance still requires manual testing.
 
 ### Mac adaptive shield trigger
 
@@ -525,40 +525,70 @@ and the equipped shield's durability getter returns an object field. Both offset
 are profile data gated by the main NSO build ID. Windowless tests confirmed an
 actual blocked explosion, menu freezing, unequipping, bow aiming and two-handed
 lock-on. Production output is tested through fake native endpoints, with no
-physical effects sent automatically. Shield resistance and impact feel require
-the user's manual controller test.
+physical effects sent automatically. The user confirmed USB shield resistance
+in v4.12.2; the short durability-impact feel remains unverified.
 
 ### Mac footstep audio haptics
 
-`audio_footsteps_mac.c` observes the verified player's footstep event through
-`OBS_PLAYER_FOOTSTEP`. It checks actor identity, gameplay state, object generations
-and the resource-name prefix, then follows each activated sound to its selected
-FWAV recording. Delayed child sounds are polled until activation. NPCs can reuse
-player-named recordings, so asset names alone are insufficient to select a voice.
-No guest audio buffers or timing values are modified.
+`audio_footsteps_mac.c` observes the common sound-event creation gate
+`OBS_AUDIO_EVENT`. The verified profile selects footstep event names, including
+`PlayerFootStep` and `NpcFootStep`. Actor identity does not filter or attenuate
+NPCs. Gameplay state and object generations reject retired events and sources;
+delayed heel/toe children remain tracked until they activate. `audio_wave.c`
+locates their encoded FWAV channel buffers without decoding or replaying them.
+Old modules containing only `OBS_PLAYER_FOOTSTEP` must be rewritten; they retain
+ordinary rumble until the new gate is available.
 
-`audio_wave.c` decodes a copy of mono, nonlooping PCM8/PCM16/DSP-ADPCM FWAV data.
-The serialized AudioRenderer output path advances this independent stream at
-48 kHz. This replays original selected recordings, including delayed heel/toe
-sounds; it does not reproduce the audible voice's pitch, gain or DSP processing.
-There are no material-specific synthetic effects. Mono recordings reach both
-actuators; gain and a final peak clamp are applied by the USB backend.
+The serialized AudioRenderer path brackets the SDK's original processing pass
+with `audio_haptics_dsp_mac.c`. The decode observer identifies selected voice
+nodes. The dispatch observer measures their actual additions to mix buffers,
+after the game's decoding, pitch/rate conversion, volume and voice filters.
+It follows the command list's direct downstream mix/volume routing to the actual
+DeviceSink and uses the same six-to-two coefficients as audible output. The
+left/right result goes to the left/right actuators. Original commands execute
+once; no guest buffers, command bytes or DSP history are rewritten by capture.
 
-`audio_haptics_usb_mac.c` opens exactly one four-channel USB DualSense output
-without changing the default audio device. Channels 1/2 are silent; channels 3/4
-are left/right actuator PCM. A bounded producer queue feeds a callback that does
-not allocate, log or acquire locks. Underruns fade out. The controller feedback
-queue retires ordinary Core Haptics engines before restoring USB audio-haptics
-mode. Adaptive trigger sampling continues. USB loss restores ordinary rumble;
-ineligibility flushes queued audio and invalidates observed events. Menus and
-player teardown discard outstanding recordings. No source tap is enabled on an
-unknown main build or without the rewritten observation gate.
+This is the spatial direct sound, not a copy of the final speaker mix. Shared
+auxiliary reverb returns contain other voices and their history, so they are not
+attributed to one footstep. There is no extra distance curve, NPC multiplier,
+material preset or combat ducking. Distance and direction changes already present
+in the game's voice mix are retained. Music and dialogue are not selected.
+The supported downstream command layout is checked before capture; an unsupported
+graph logs a capture-disabled message while the original audio keeps running.
+
+`audio_haptics_usb_mac.c` opens one four-channel USB DualSense output without
+changing the default audio device. Channels 1/2 are silent; channels 3/4 carry
+actuator PCM. The callback uses a bounded queue without allocation or locks;
+underruns fade out. Overall gain and the final peak limit remain independent of
+ordinary rumble gain. The feedback queue retires ordinary Core Haptics engines
+before restoring USB audio mode, while continuing adaptive-trigger sampling.
+In USB audio mode, the same feedback queue owns the R2/L2 output reports.
+`adaptive_trigger_mac.m` sends its existing normalized slopes to the USB backend
+instead of native GameController setters: the native trigger path suppressed
+otherwise valid actuator PCM in the hardware A/B test. Each USB report retains
+both triggers, enables their fields with `0x0c`, and leaves the emulated-rumble /
+audio-disable bits clear. The ten-zone feedback encoding is adapted from Nielk1's
+MIT-licensed trigger generator (`dm/third_party/dualsense-trigger/`). Native
+trigger output resumes when USB audio ownership ends; the native state cache is
+invalidated before the next effect. Trigger updates never change audio volumes,
+LEDs or ordinary rumble amplitudes.
+
+USB loss restores ordinary rumble. Ineligibility invalidates pending events and
+queued audio; menus and player teardown discard source identities. Closing the
+stream logs accepted input frames/peak and actual callback signal frames/peak,
+layout errors and queue drops. The callback only updates counters; it never logs.
+The Mac's default speaker mute is separate from this USB stream. A zero volume
+on the DualSense output device is a separate setting to check when diagnosing it.
 
 Run `make -C dm/host/tests GAME=01007EF00011E000 run-audio-haptics run-mac-bow`
-and the Mac input tests. They use synthetic guest objects and fake endpoints;
-physical effect tests are initiated manually. Original Stone and Grass recordings
-were confirmed distinguishable on USB, with correct left/right actuators. The
-integrated game and simultaneous adaptive-trigger feel require manual acceptance.
+and the Mac input tests. Synthetic tests cover source lifetime, NPC admission,
+stereo routing, master gain, unchanged audible buffers, shared report mode flags
+and return to native trigger output. The user confirmed that the original native
+trigger path suppressed a captured footstep that vibrated on its own; the shared
+USB path then produced grip vibration and R2/L2 resistance together. The user
+also confirmed both in the integrated v4.12.2 game with audio gain 20. Its output
+log recorded 894,753 nonzero USB frames, input peak 0.053589 and USB peak 1,
+with zero callback layout errors or queue drops.
 
 ### Mac controller motion
 

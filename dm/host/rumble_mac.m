@@ -33,10 +33,27 @@ static float g_rumble_intensity[2] = {-1,-1}, g_rumble_sharpness[2] = {-1,-1};
 static float g_rumble_gain = 1;
 static int g_audio_haptics;
 static uint64_t g_audio_retry;
-static void audio_submit(const float *pcm, unsigned frames) { dm_haptic_usb_enqueue(pcm, frames); }
+static void audio_submit(const float *pcm, unsigned frames) {
+    size_t queued = dm_haptic_usb_enqueue(pcm, frames);
+    static int reported;
+    if (!reported && queued) {
+        float peak = 0;
+        for (size_t i = 0; i < queued * 2; i++) peak = fmaxf(peak, fabsf(pcm[i]));
+        if (peak > 0) {
+            fprintf(stderr,"[dm] Audio haptics: selected footstep PCM reached USB queue (input peak %.6f)\n",peak);
+            reported = 1;
+        }
+    }
+}
 static void audio_close(void) {
     dm_footsteps_set_active(0);
-    if (g_audio_haptics) dm_haptic_usb_close();
+    dm_adaptive_trigger_set_usb_output(NULL);
+    if (g_audio_haptics) {
+        dm_haptic_usb_stats s = dm_haptic_usb_get_stats();
+        fprintf(stderr,"[dm] Audio haptics output: callbacks %u, queued %u frames, signal %u frames, input peak %.6f, USB peak %.6f, layout errors %u, dropped %u frames\n",
+                s.callbacks,s.queued_frames,s.signal_frames,s.input_peak,s.output_peak,s.layout_errors,s.dropped_frames);
+        dm_haptic_usb_close();
+    }
     g_audio_haptics = 0;
 }
 static void audio_open(void) { // rumble queue; only the selected, unique DualSense
@@ -45,6 +62,10 @@ static void audio_open(void) { // rumble queue; only the selected, unique DualSe
     for (GCController *c in GCController.controllers) if ([c.extendedGamepad isKindOfClass:GCDualSenseGamepad.class]) count++;
     if (count != 1) return;
     g_audio_haptics = dm_haptic_usb_open();
+    if(g_audio_haptics){
+        dm_adaptive_trigger_set_usb_output(dm_haptic_usb_set_trigger);
+        if(dm_haptic_usb_ready())fprintf(stderr,"[dm] Audio haptics: R2/L2 share the USB report owner\n");
+    }
     fprintf(stderr,"[dm] Audio haptics: %s%s\n",dm_haptic_usb_status(),g_audio_haptics ? "" : "; using game rumble");
 }
 static pthread_mutex_t g_rumble_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -61,6 +82,17 @@ static float rumble_read_gain(void) {
         return 1;
     }
     fprintf(stderr,"[dm] Mac rumble gain: %.2fx (DM_RUMBLE_GAIN)\n",gain);
+    return gain;
+}
+static float audio_read_gain(void) {
+    const char *text = getenv("DM_AUDIO_HAPTICS_GAIN");
+    if (!text) return .3f;
+    char *end;
+    float gain = strtof(text, &end);
+    if (end == text || *end || !isfinite(gain) || gain < 0) {
+        fprintf(stderr,"【红】DM_AUDIO_HAPTICS_GAIN must be finite and nonnegative; using 0.3\n");
+        return .3f;
+    }
     return gain;
 }
 
@@ -218,14 +250,9 @@ void dm_rumble_mac_start(void) {
     dispatch_once(&once, ^{
         g_rumble_gain = rumble_read_gain();
         dm_footsteps_submit = audio_submit;
-        const char *text = getenv("DM_AUDIO_HAPTICS_GAIN");
-        float gain = .3f; char *end = NULL;
-        if (text) {
-            float value = strtof(text, &end);
-            if (end != text && !*end && isfinite(value) && value >= 0 && value <= 2) gain = value;
-            else fprintf(stderr,"【红】DM_AUDIO_HAPTICS_GAIN must be between 0 and 2; using 0.3\n");
-        }
+        float gain = audio_read_gain();
         dm_haptic_usb_set_gain(gain);
+        if (dm_footsteps_configured()) fprintf(stderr,"[dm] Audio haptics gain: %.2fx (DM_AUDIO_HAPTICS_GAIN; PCM full scale +/-1)\n",gain);
         g_rumble_queue = dispatch_queue_create("dm.controller.rumble", DISPATCH_QUEUE_SERIAL);
         dispatch_queue_set_specific(g_rumble_queue,&g_rumble_queue_key,&g_rumble_queue_key,NULL);
 #ifndef DM_RUMBLE_TEST

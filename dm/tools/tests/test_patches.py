@@ -29,6 +29,18 @@ def builds_of(g):   # {build ID: module name} of a profile's build rows (a profi
     return {bid: m for row in (game.load(g) if isinstance(g, str) else g).builds().values() for m, bid in row.items() if m != 'display'}
 
 
+class ObservationCallSites(unittest.TestCase):
+    def test_only_linking_calls_clobber_scratch_at_return(self):
+        from nso_asm import is_abi_call, BLR, BR, B
+        self.assertTrue(is_abi_call(0x94000000))
+        self.assertTrue(is_abi_call(0x97ffffff))
+        for reg in range(31):
+            self.assertTrue(is_abi_call(BLR(reg)), f'blr x{reg}')
+            self.assertFalse(is_abi_call(BR(reg)), f'br x{reg} is not a call')
+        for word in (B(0, 4), 0xd65f03c0, 0xd503201f, 0xb4000020, 0xd63f0001):
+            self.assertFalse(is_abi_call(word))
+
+
 class Registry(unittest.TestCase):
     def test_no_build_claimed_twice(self):
         for kind in ('CUTS', 'OBS', 'FRAME_STEP'):

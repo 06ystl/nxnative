@@ -1,5 +1,6 @@
 // Input/rumble tests never open a physical audio or HID endpoint.
 #include <stddef.h>
+#include "../audio_haptics_usb_mac.h"
 int test_audio_ready,test_audio_active,test_foot_active,test_audio_closed;
 void (*dm_footsteps_submit)(const float*,unsigned);
 int dm_footsteps_configured(void){return 0;}
@@ -11,3 +12,5 @@ int dm_haptic_usb_ready(void){return test_audio_ready;}
 void dm_haptic_usb_set_gain(float g){(void)g;}
 size_t dm_haptic_usb_enqueue(const float *p,size_t n){(void)p;return n;}
 const char *dm_haptic_usb_status(void){return "test";}
+dm_haptic_usb_stats dm_haptic_usb_get_stats(void){return (dm_haptic_usb_stats){0};}
+void dm_haptic_usb_set_trigger(unsigned side,const dm_trigger_slope *effect){(void)side;(void)effect;}

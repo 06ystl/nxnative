@@ -72,6 +72,8 @@ class PackagingTests(unittest.TestCase):
     def test_signature_failure_keeps_previous_app_and_removes_staging(self):
         repo = self.root / 'repo'; (repo / 'dm/host').mkdir(parents=True)
         (repo / 'dm/host/dmhost_app').write_bytes(b'fixture host')
+        license_file = repo / 'dm/third_party/dualsense-trigger/LICENSE'
+        license_file.parent.mkdir(parents=True); license_file.write_text('fixture trigger license')
         profile = Profile(self.root)
         (repo / 'dm/gfx/nvn').mkdir(parents=True)
         (repo / 'dm/gfx/nvn/dmsh_chain.h').write_text('#define DMSH_CHAIN "fixture"\n')
@@ -94,6 +96,7 @@ class PackagingTests(unittest.TestCase):
         def run(cmd, log, env=None, cwd=None, on_line=None):
             if cmd[0] == 'python-fixture': Path(cmd[-1]).write_bytes(b'font')
             if cmd[0] == 'codesign':
+                self.assertEqual((Path(cmd[-1]) / 'Contents/Resources/licenses/dualsense-trigger.txt').read_text(), 'fixture trigger license')
                 with (Path(cmd[-1]) / 'Contents/Info.plist').open('rb') as f: info = plistlib.load(f)
                 self.assertTrue(info['GCSupportsControllerUserInteraction'])
                 self.assertEqual(info['GCSupportedGameControllers'], [{'ProfileName': 'ExtendedGamepad'}])

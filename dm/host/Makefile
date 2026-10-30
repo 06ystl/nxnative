@@ -19,11 +19,11 @@ CFLAGS=-O1 -g -Wall -Wno-unused-function
 # Mac features are explicit so platform-only sources stay out of the iOS build.
 MAC_FRONT_SRC = front_mac.m gamepad_mac.m
 MAC_FEEDBACK_SRC = rumble_mac.m adaptive_trigger_mac.m bow_state_mac.c shield_state_mac.c \
-                   audio_wave.c audio_footsteps_mac.c audio_haptics_usb_mac.c
+                   audio_wave.c audio_footsteps_mac.c audio_haptics_dsp_mac.c audio_haptics_usb_mac.c
 MAC_MOTION_SRC = motion_mac.m motion_controller_mac.m motion_dsu_mac.c
 MAC_GAME_SRC = resolution_mac.c timing_mac.c cheats_mac.c
 MAC_HEADERS = gamepad_mac.h rumble_mac.h adaptive_trigger_mac.h bow_state_mac.h shield_state_mac.h \
-              audio_wave.h audio_footsteps_mac.h audio_haptics_usb_mac.h input_focus_mac.h \
+              audio_wave.h audio_footsteps_mac.h audio_haptics_dsp_mac.h audio_haptics_usb_mac.h trigger_effect_mac.h input_focus_mac.h \
               motion_mac.h motion_controller_mac.h motion_filter_mac.h motion_dsu_mac.h \
               resolution_mac.h timing_mac.h cheats_mac.h
 MAC_FRAMEWORKS = -framework Cocoa -framework QuartzCore -framework Metal -framework GameController \

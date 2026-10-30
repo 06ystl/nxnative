@@ -79,6 +79,8 @@ def build_app(repo, work, out, g, patched, romfs, msl, app_name, bundle_id,
         contents = app / 'Contents'; res = contents / 'Resources'; dm = res / 'dm'
         (contents / 'MacOS').mkdir(parents=True); dm.mkdir(parents=True)
         shutil.copy2(host, contents / 'MacOS/nxnative')
+        licenses = res / 'licenses'; licenses.mkdir()
+        shutil.copy2(repo / 'dm/third_party/dualsense-trigger/LICENSE', licenses / 'dualsense-trigger.txt')
         for module in g.words('modules'):
             for suffix in ('patched.bin', 'fixups.tsv', 'gates.tsv', 'cuts.tsv', 'obs.tsv'):
                 shutil.copy2(patched / f'{module}.{suffix}', dm)

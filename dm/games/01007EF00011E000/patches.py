@@ -97,10 +97,10 @@ def frame_step(ctx):
 
 FRAME_STEP = {'cd57b23fa4bbad65803d9788c01821ee': frame_step}
 
-# Read-only observation after the footstep sound event has been created.
-# x19: collision metadata (origin actor +0xb8), x20: event handle.
+# Read-only observation after the common sound event starts its first child.
+# x19 is the event object; sound resource names select player and NPC footsteps.
 OBS = {
   "cd57b23fa4bbad65803d9788c01821ee": [
-    (0x11f6b4c, 22, "aa1403e0", "player footstep sound event; preserve game sound and timing"),
+    (0xf477f8, 23, "2a0003f5", "sound event created; observe selected sources without changing audio"),
   ],
 }

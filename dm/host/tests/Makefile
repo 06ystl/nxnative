@@ -122,10 +122,11 @@ $(B)/t_adaptive_trigger_mac: t_adaptive_trigger_mac.m ../adaptive_trigger_mac.m 
 $(B)/t_shield_state_mac: t_shield_state_mac.c ../shield_state_mac.c ../shield_state_mac.h ../dm.h $(GAME_H) | $(B)
 	clang -O2 -Wall -Wextra -Werror $(GINC) -I.. -o $@ t_shield_state_mac.c ../shield_state_mac.c
 
-run-audio-haptics: $(B)/t_audio_wave $(B)/t_audio_footsteps $(B)/t_audio_haptics_usb
+run-audio-haptics: $(B)/t_audio_wave $(B)/t_audio_footsteps $(B)/t_audio_haptics_usb $(B)/t_audio_haptics_dsp
 	$(B)/t_audio_wave
 	$(B)/t_audio_footsteps
 	$(B)/t_audio_haptics_usb
+	$(B)/t_audio_haptics_dsp
 $(B)/t_audio_wave: t_audio_wave.c audio_wave_fixture.h ../audio_wave.c ../audio_wave.h | $(B)
 	clang -O2 -Wall -Wextra -Werror -o $@ t_audio_wave.c ../audio_wave.c
 $(B)/t_audio_footsteps: t_audio_footsteps.c audio_wave_fixture.h ../audio_footsteps_mac.c ../audio_footsteps_mac.h ../audio_wave.c ../audio_wave.h $(GAME_H) | $(B)
@@ -133,7 +134,11 @@ $(B)/t_audio_footsteps: t_audio_footsteps.c audio_wave_fixture.h ../audio_footst
 $(B)/t_audio_haptics_usb: t_audio_haptics_usb.c ../audio_haptics_usb_mac.c ../audio_haptics_usb_mac.h | $(B)
 	clang -O2 -Wall -Wextra -Werror -o $@ t_audio_haptics_usb.c -framework CoreFoundation -framework AudioToolbox -framework CoreAudio -framework IOKit
 .PHONY: run-audio-haptics
+$(B)/t_adaptive_trigger_mac $(B)/t_audio_haptics_usb $(B)/t_rumble_mac $(B)/t_gamepad_mac $(B)/t_motion_mac: ../trigger_effect_mac.h
 
 # The full suite composes feature runners; each binary runs once.
 run: run-core run-mac-input run-cheats run-mac-bow run-audio-haptics
 .PHONY: run-core
+
+$(B)/t_audio_haptics_dsp: t_audio_haptics_dsp.c audio_wave_fixture.h ../audio_haptics_dsp_mac.c ../audio_haptics_dsp_mac.h ../audio_footsteps_mac.h $(GAME_H) | $(B)
+	clang -O2 -Wall -Wextra -Werror $(GINC) -o $@ t_audio_haptics_dsp.c

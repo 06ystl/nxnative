@@ -26,3 +26,7 @@ def BEQ(frm, to):
 def BRK(imm): return 0xD4200000 | ((imm & 0xFFFF) << 5)
 def BLR(n): return 0xD63F0000 | (n << 5)
 NOP = 0xD503201F
+
+def is_abi_call(word):
+    """BL / BLR return sites have no live caller-saved x9-x17 under AAPCS64."""
+    return word >> 26 == 0x25 or word & 0xfffffc1f == 0xd63f0000

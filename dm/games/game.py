@@ -206,10 +206,10 @@ def header(g):
     shield_rows = ', '.join(shield_rows) or '{0}'
     foot_rows, foot_builds = [], set()
     for row in g.values('mac_audio_footsteps'):
-        if len(row) != 27 or row[0] not in known_builds or len(row[1]) > 63 or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', row[1]):
-            raise ValueError(f'{g.id}: mac_audio_footsteps requires a known main build, event prefix and 25 fields')
+        if len(row) != 25 or row[0] not in known_builds or len(row[1]) > 63 or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*', row[1]):
+            raise ValueError(f'{g.id}: mac_audio_footsteps requires a known main build, event token and 23 fields')
         values = [int(value, 0) for value in row[2:]]
-        if any(value < 0 or value > 0xffffffff for value in values) or values[4] > 255 or max(values[6:8]) > 30 or values[15] > values[16]:
+        if any(value < 0 or value > 0xffffffff for value in values) or values[4] > 255 or values[6] > 30 or values[13] > values[14]:
             raise ValueError(f'{g.id}: invalid mac_audio_footsteps layout')
         if row[0] in foot_builds:
             raise ValueError(f'{g.id}: duplicate mac_audio_footsteps build')
