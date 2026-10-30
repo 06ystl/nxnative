@@ -12,6 +12,8 @@ static NSArray *test_controllers(id cls, SEL sel) { (void)cls; (void)sel; return
 
 @interface TestMacApp : NSObject
 @property (getter=isActive) BOOL active;
+@property (getter=isHidden) BOOL hidden;
+@property NSWindow *modalWindow;
 @end
 @implementation TestMacApp
 @end
@@ -30,6 +32,11 @@ void hle_bind_system_event(void *event, int autoclear) { (void)event; (void)auto
 void hle_signal_system_event(void *event) { (void)event; }
 
 static int checks, fails;
+static int keyboard_enabled;
+static void input_changed(int keyboard, int controller) {
+    keyboard_enabled = keyboard;
+    dm_gamepad_mac_set_active(controller);
+}
 #define CHECK(c, message) do { checks++; if (!(c)) { fails++; fprintf(stderr, "FAIL: %s (line %d)\n", message, __LINE__); } } while (0)
 static NpadState sample(void) { NpadState s; uint32_t id = 0; h_hid_StateFullKey(&s, &id); return s; }
 static void changed(GCExtendedGamepad *g) {
@@ -108,9 +115,9 @@ int main(void) {
         dm_input_set(0, 0, 0, 0, 0); sample();
 
         dm_gamepad_mac_set_active(0); s = sample();
-        CHECK((s.buttons & 0xffff) == 0 && !s.lx && !s.ly && !s.rx && !s.ry, "focus loss releases physical buttons and axes");
+        CHECK((s.buttons & 0xffff) == 0 && !s.lx && !s.ly && !s.rx && !s.ry, "ineligible window releases physical buttons and axes");
         [g.buttonB setValue:1]; changed(g);
-        CHECK(buttons() == 0, "background controller changes stay neutral");
+        CHECK(buttons() == 0, "controller changes stay neutral while disabled");
         [g.buttonA setValue:0]; [g.buttonB setValue:0];
         [g.leftThumbstick setValueForXAxis:0 yAxis:0]; [g.rightThumbstick setValueForXAxis:0 yAxis:0];
         dm_gamepad_mac_set_active(1);
@@ -133,14 +140,22 @@ int main(void) {
         TestMacApp *app = [TestMacApp new]; app.active = YES;
         TestMacWindow *window = [TestMacWindow new]; window.keyWindow = YES;
         window.occlusionState = NSWindowOcclusionStateVisible;
-        id watch = dm_mac_input_watch((NSApplication *)app, (NSWindow *)window, dm_gamepad_mac_set_active);
+        id watch = dm_mac_input_watch((NSApplication *)app, (NSWindow *)window, input_changed);
         CHECK(watch != nil, "focus watcher is retained for the game window's lifetime");
         settle();
-        CHECK(buttons() == DM_BTN_A, "foreground watcher samples connected controller at startup");
+        CHECK(buttons() == DM_BTN_A && keyboard_enabled, "foreground watcher enables keyboard and connected controller");
 
         app.active = NO; notify(NSApplicationDidResignActiveNotification, app);
-        CHECK(buttons() == 0, "Command-Tab clears input even without a window-key notification");
+        CHECK(buttons() == DM_BTN_A && !keyboard_enabled, "visible background game keeps its pad but disables keyboard input");
+        window.keyWindow = NO; notify(NSWindowDidResignKeyNotification, window);
+        [g.buttonA setValue:0];
+        [g.rightThumbstick setValueForXAxis:-0.75f yAxis:0.5f]; changed(g);
+        s = sample();
+        CHECK((s.buttons & 0xffff) == 0 && s.rx == -24575 && s.ry == 16383, "background button release and right-stick motion reach GetNpadState");
+        [g.rightThumbstick setValueForXAxis:0 yAxis:0];
+        [g.buttonA setValue:1]; changed(g);
         g.valueChangedHandler = nil;
+        window.keyWindow = YES;
         app.active = YES; notify(NSApplicationDidBecomeActiveNotification, app);
         CHECK(g.valueChangedHandler != nil && buttons() == DM_BTN_A, "Command-Tab back reinstalls a lost callback on the same pad");
         [g.buttonA setValue:0]; changed(g);
@@ -150,15 +165,46 @@ int main(void) {
         app.active = NO; window.keyWindow = NO;
         notify(NSApplicationDidResignActiveNotification, app);
         app.active = YES; notify(NSApplicationDidBecomeActiveNotification, app);
-        CHECK(buttons() == 0, "activation before key-window restoration stays neutral");
+        CHECK(buttons() == 0 && !keyboard_enabled, "app-owned dialog or activation before key restoration stays neutral");
         window.keyWindow = YES; settle();
-        CHECK(buttons() == DM_BTN_A, "queued refresh observes AppKit's final key-window state");
+        CHECK(buttons() == DM_BTN_A && keyboard_enabled, "queued refresh observes AppKit's final key-window state");
+
+        app.active = NO; window.keyWindow = NO;
+        notify(NSApplicationDidResignActiveNotification, app);
+        app.hidden = YES; notify(NSApplicationDidHideNotification, app);
+        CHECK(buttons() == 0 && !keyboard_enabled, "hiding a background app clears input even before occlusion updates");
+        [g.buttonA setValue:0]; changed(g);
+        app.hidden = NO; notify(NSApplicationDidUnhideNotification, app);
+        CHECK(buttons() == 0, "unhiding rereads releases instead of restoring stale buttons");
+        [g.buttonA setValue:1]; changed(g);
+        CHECK(buttons() == DM_BTN_A && !keyboard_enabled, "unhidden background game accepts controller without keyboard focus");
+        app.modalWindow = (NSWindow *)window;
+        notify(NSWindowDidResignKeyNotification, window);
+        CHECK(buttons() == 0, "app modal dialog blocks gameplay even while the browser is frontmost");
+        app.modalWindow = nil; notify(NSWindowDidBecomeKeyNotification, window);
+        CHECK(buttons() == DM_BTN_A && !keyboard_enabled, "dismissing a modal restores background pad without enabling keyboard");
+
+        NSNotificationCenter *workspace = NSWorkspace.sharedWorkspace.notificationCenter;
+        [workspace postNotificationName:NSWorkspaceSessionDidResignActiveNotification object:nil];
+        CHECK(buttons() == 0, "inactive user session clears a visible game's input");
+        [workspace postNotificationName:NSWorkspaceScreensDidWakeNotification object:nil];
+        CHECK(buttons() == 0, "display wake cannot override an inactive session");
+        [workspace postNotificationName:NSWorkspaceSessionDidBecomeActiveNotification object:nil];
+        CHECK(buttons() == DM_BTN_A && !keyboard_enabled, "session return restores visible background controller");
+        [workspace postNotificationName:NSWorkspaceScreensDidSleepNotification object:nil];
+        CHECK(buttons() == 0, "display sleep clears controller input");
+        notify(NSApplicationDidBecomeActiveNotification, app);
+        CHECK(buttons() == 0, "app notification cannot override display sleep");
+        [workspace postNotificationName:NSWorkspaceScreensDidWakeNotification object:nil];
+        CHECK(buttons() == DM_BTN_A, "display wake resamples current controller state");
 
         window.occlusionState = 0; notify(NSWindowDidChangeOcclusionStateNotification, window);
         CHECK(buttons() == 0, "switching Spaces releases input when game becomes occluded");
         window.occlusionState = NSWindowOcclusionStateVisible;
         notify(NSWindowDidChangeOcclusionStateNotification, window);
-        CHECK(buttons() == DM_BTN_A, "returning to the game's Space restores input");
+        CHECK(buttons() == DM_BTN_A && !keyboard_enabled, "returning to a visible background Space restores only controller input");
+        app.active = YES; window.keyWindow = YES;
+        notify(NSApplicationDidBecomeActiveNotification, app);
 
         for (NSString *direction in @[@"enter", @"exit"]) {
             BOOL enter = [direction isEqualToString:@"enter"];
@@ -182,11 +228,15 @@ int main(void) {
         g.valueChangedHandler = nil; notify(NSApplicationDidChangeScreenParametersNotification, app);
         CHECK(g.valueChangedHandler != nil, "display configuration change rebinds controller");
 
-        app.active = NO; notify(NSApplicationDidResignActiveNotification, app);
+        app.active = NO; window.keyWindow = NO; notify(NSApplicationDidResignActiveNotification, app);
         connected = @[second];
-        app.active = YES; notify(NSApplicationDidBecomeActiveNotification, app);
-        CHECK(g_mac_controller == second && buttons() == DM_BTN_B, "foreground resume discovers a replacement connected in the background");
+        notify(NSApplicationDidChangeScreenParametersNotification, app);
+        CHECK(g_mac_controller == second && buttons() == DM_BTN_B && !keyboard_enabled, "visible background refresh discovers a replacement controller");
         CHECK(g.valueChangedHandler == nil, "background replacement detaches the old controller");
+        notify(NSWindowWillCloseNotification, window);
+        CHECK(buttons() == 0, "closing the game clears input before it disappears");
+        notify(NSWindowDidChangeOcclusionStateNotification, window);
+        CHECK(buttons() == 0, "later visibility notifications cannot reactivate a closed window");
         settle();
         watch = nil;
         CHECK(window.delegate == nil, "releasing focus watcher removes the window delegate");
@@ -197,6 +247,7 @@ int main(void) {
         dm_pad_set(DM_BTN_PLUS, 0, 0, 0, 0); sample();
         setenv("DM_KEYS", "0:Plus~10", 1);
         dm_gamepad_mac_start(); dm_gamepad_mac_set_active(0);
+        CHECK(GCController.shouldMonitorBackgroundEvents, "Mac startup enables Apple's background event delivery");
         CHECK(buttons() == DM_BTN_PLUS, "windowed DM_KEYS replay retains ownership of the scripted input channel");
         method_setImplementation(registry, original);
         fprintf(stdout, "Mac controller: %d checks, %d failures\n", checks, fails);

@@ -73,6 +73,9 @@ static void pad_select(NSArray<GCController *> *controllers) {
 void dm_gamepad_mac_start(void) {
     static int started; if (started++) return;
     dm_rumble_mac_start();
+    // macOS otherwise stops delivering events as soon as another app activates.
+    // Window/session eligibility still gates pad_read, motion and rumble.
+    GCController.shouldMonitorBackgroundEvents = YES;
     // DM_KEYS owns dm_pad_set during diagnostic replays, including windowed runs.
     const char *script = getenv("DM_KEYS"); g_mac_scripted = script && *script;
     if (g_mac_scripted) return;

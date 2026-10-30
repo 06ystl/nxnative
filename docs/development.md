@@ -301,15 +301,15 @@ cached/batched and original paths; production builds expose no such controls.
 
 ### Mac physical controllers
 
-Pair a controller in macOS or connect it over USB, then focus the game window. `dm/host/gamepad_mac.m` subscribes to GameController connection/disconnection notifications and samples already-connected extended gamepads at startup. The first supported device supplies the host's single player; connecting another does not replace it, and disconnecting the active one selects a remaining supported device. Non-extended profiles are ignored.
+Pair a controller in macOS or connect it over USB, then keep the game window visible. It can remain on another display while a browser has keyboard focus. `dm/host/gamepad_mac.m` subscribes to GameController connection/disconnection notifications and samples already-connected extended gamepads at startup. The first supported device supplies the host's single player; connecting another does not replace it, and disconnecting the active one selects a remaining supported device. Non-extended profiles are ignored.
 
 The Mac frontend publishes through `dm_pad_set`, independently of keyboard input. The host merges button bits and selects the greater magnitude for each stick axis. The Mac path sends GameController's A/B/X/Y directly as the game's A/B/X/Y, following [d2r-mobile's controller correction](https://github.com/jhaizhou-ops/d2r-mobile/blob/120fe55c02a5633476998a44f8c3c3c809fa48b0/dm/ios/Sources/dm_gamepad.m): the system already normalizes Nintendo button letters, so another vendor-based swap reverses them twice. PlayStation ×/○/□/△ map to A/B/X/Y. Both sticks use a small radial dead zone.
 
-`dm/host/input_focus_mac.m` observes application activation, window key status, visibility, minimization, fullscreen transitions and display changes. Losing focus clears keyboard, mouse touch and physical input. Regaining focus rereads the connected-controller registry and reinstalls the selected profile's callback, even when the device object is unchanged. A queued refresh handles AppKit notifications arriving before the final key-window state; fullscreen failure delegate methods release the transition state too. All controller callbacks and selection run on the main queue.
+`dm/host/input_focus_mac.m` reports keyboard focus and controller eligibility separately. Keyboard/mouse events require the active key game window, and losing focus clears their held state. Controllers, phone motion and rumble remain enabled while the game is visible on another display, using `GCController.shouldMonitorBackgroundEvents`. Hiding, minimizing, full occlusion, fullscreen transitions, window closure, display sleep and inactive user sessions disable them. An app-owned modal dialog, or another key window in the active app, also blocks gameplay behind it. The frontend reports guest focus from controller eligibility, so a visible background game continues accepting input. Each eligible refresh rereads the connected-controller registry and reinstalls the callback, even when the device object is unchanged. A queued refresh handles AppKit notification ordering; fullscreen failure delegate methods release the transition state too. Application/window observers and workspace session/display observers are removed with the watcher. All controller callbacks and selection run on the main queue.
 
 `DM_KEYS` diagnostic replays own the same controller channel, so physical controller capture is disabled while a non-empty `DM_KEYS` is set. Windowless runs do not start GameController monitoring. Connected/disconnected device messages appear in the host log. The Mac plist declares the extended-gamepad profile, and both Mac host targets link GameController; the iOS source generator excludes `gamepad_mac.m` by the existing `_mac` convention.
 
-The controller regression test uses Apple's writable snapshot profiles and verifies values returned by the real `GetNpadState` implementation, including mapping, both sticks, keyboard coexistence, disconnect/reconnect and scripted-input ownership. AppKit notifications with simulated app/window state exercise application switching, delayed key restoration, Spaces, fullscreen success/failure, minimization, display changes and callback recovery without opening a window:
+The controller regression test uses Apple's writable snapshot profiles and verifies values returned by the real `GetNpadState` implementation, including mapping, both sticks, keyboard coexistence, disconnect/reconnect and scripted-input ownership. AppKit notifications with simulated app/window state exercise visible background button/stick input, independent keyboard eligibility, hidden apps, session/display sleep, delayed key restoration, Spaces, fullscreen success/failure, minimization, display changes, closure and callback recovery without opening a window:
 
 ```
 make -C dm/host/tests GAME=010015100B514000 build/t_gamepad_mac build/t_padmap
@@ -319,15 +319,17 @@ dm/host/tests/build/t_padmap
 
 A physical Xbox controller was also checked in BotW 1.9.0: right-stick input reached the game and live camera-sensitivity changes took effect. Focus recovery is covered by the simulated AppKit tests above. Rebuild an existing app with `--target macos` to include controller support.
 
+The visible-background policy was also checked with a physical Xbox Wireless Controller and two displays in BotW on 2026-10-23: the user confirmed that sticks and buttons continued controlling the fullscreen game while the browser on the other display had focus.
+
 ### Mac controller rumble
 
-Enable vibration in the game's own settings and focus the game window. Mac builds
+Enable vibration in the game's own settings and keep the game window visible. Mac builds
 route rumble to the same controller as player 1, including a controller connected
 while the game is running. The connection must expose `GCController.haptics`.
 The log reports `Mac rumble: ... independent left/right handles`, `shared default
 haptics`, or `haptics unavailable on this connection` when a controller is selected.
 A missing haptics capability does not affect buttons or sticks. No environment
-switch is required. Physical Xbox vibration testing is pending.
+switch is required. Short physical Xbox pulses through this backend have been confirmed; in-game vibration remains under investigation, so API success alone is not physical acceptance.
 
 `hle_hid.c` exposes the virtual full-key/handheld controller's two SDK vibration
 handles when the Mac sink is installed, even before a physical controller connects.
@@ -342,9 +344,10 @@ Haptics sharpness over 40–1250 Hz. This approximates Switch HD rumble on ordin
 controller motors. Controllers exposing both handle localities use separate engines;
 default-only devices use one engine and the stronger side, avoiding overlapping
 players on the same motors. Zero values stop immediately. Held values remain until
-replaced; ordinary 30-second continuous players renew after 25 seconds. Focus loss,
+replaced; ordinary 30-second continuous players renew after 25 seconds. Window ineligibility (hidden, minimized or occluded), display sleep, inactive sessions,
 controller changes, disconnect and graceful/normal exit stop feedback and discard
-pending values; refocusing needs a fresh game request. Engine resets recover, and
+pending values; resuming needs a fresh game request. Merely focusing a browser
+while the game remains visible leaves feedback enabled. Engine resets recover, and
 API failures retry after five seconds. Delayed callbacks cannot retire a replacement
 controller's engine. Scripted `DM_KEYS` runs advertise the interface but do not
 attach physical feedback.

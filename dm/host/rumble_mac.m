@@ -2,7 +2,7 @@
 // gamepad_feedback.m at f5cc1519 (MIT; dm/third_party/macnativegames/LICENSE).
 // Guest threads only publish the latest value. All haptic objects belong to one
 // serial queue, sampled at 100 Hz independently of rendering. Values persist
-// until replaced, as on Switch HID; focus loss, detach and shutdown clear them.
+// until replaced, as on Switch HID; window ineligibility, detach and shutdown clear them.
 #import <Foundation/Foundation.h>
 #import <GameController/GameController.h>
 #import <CoreHaptics/CoreHaptics.h>

@@ -2,7 +2,7 @@
 // Without DM_WINDOW: the guest runs directly on the current thread, behaving the same as with no front end (windowless tests use this).
 // The window is fullscreen-capable (the green button and ⌃⌘F); DM_FULLSCREEN starts it that way. ⌘Q quits; the left mouse button is the touchscreen.
 // Key map (Nintendo layout): WASD left stick, arrow keys D-pad, J=A K=B U=X I=Y, Q=L E=R, Z=ZL C=ZR, F=press left stick G=press right stick, Return=+ Tab=−, Space=shake the controller.
-// Controllers: the shared Mac adapter preserves system-normalized button names and foreground input.
+// Controllers: the shared Mac adapter preserves system-normalized button names and independent visible-background input.
 #import <Cocoa/Cocoa.h>
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
@@ -29,12 +29,14 @@ static void push(void) {
     int32_t lx = (g_d - g_a) * 32767, ly = (g_w - g_s) * 32767;
     dm_input_set(g_btn, lx, ly, 0, 0);
 }
-static void input_active(int active) {
-    g_keyboard_active = active;
-    if (!active) { g_btn = 0; g_w = g_a = g_s = g_d = 0; push(); dm_touch_set(NULL, 0); }
-    dm_gamepad_mac_set_active(active);
-    dm_motion_mac_set_active(active);
-    dm_focus_set(active ? 1 : g_window.miniaturized ? 3 : 2);
+static void input_active(int keyboard, int controller) {
+    g_keyboard_active = keyboard;
+    if (!keyboard) { g_btn = 0; g_w = g_a = g_s = g_d = 0; push(); dm_touch_set(NULL, 0); }
+    dm_gamepad_mac_set_active(controller);
+    dm_motion_mac_set_active(controller);
+    // The guest stays interactive while visible on another display. Sending an
+    // OutOfFocus notification here could make it ignore otherwise valid input.
+    dm_focus_set(controller ? 1 : g_window.miniaturized ? 3 : 2);
 }
 static int key_bit(unsigned short code) {
     switch (code) {
