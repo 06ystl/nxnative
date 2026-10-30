@@ -16,7 +16,7 @@ endif
 GAME_H = gen/$(GAME)/game_profile.h
 CFLAGS=-O1 -g -Wall -Wno-unused-function
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
-SRC=main.c loader.c hle.c crash.c probe.c thread.c memstat.m $(sort $(wildcard hle_*.c)) front_mac.m gamepad_mac.m rumble_mac.m input_focus_mac.m motion_mac.m motion_controller_mac.m motion_dsu_mac.c resolution_mac.c timing_mac.c cheats_mac.c entry.S
+SRC=main.c loader.c hle.c crash.c probe.c thread.c memstat.m $(sort $(wildcard hle_*.c)) front_mac.m gamepad_mac.m rumble_mac.m adaptive_trigger_mac.m bow_state_mac.c shield_state_mac.c input_focus_mac.m motion_mac.m motion_controller_mac.m motion_dsu_mac.c resolution_mac.c timing_mac.c cheats_mac.c entry.S
 # NVN null device + nn::vi + the Vulkan layer (dm/gfx/)
 # Sources under dm/gfx, dm/gfx/nvn, dm/gfx/tex, dm/gfx/vk and dm/gfx/gl are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line
 GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m ../gfx/nvn/*.S ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m ../gfx/gl/*.m))
@@ -50,7 +50,7 @@ endif
 endif
 .PHONY: FORCE
 FORCE:
-dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h dm_input.h front.h gamepad_mac.h rumble_mac.h input_focus_mac.h motion_mac.h motion_controller_mac.h motion_filter_mac.h motion_dsu_mac.h resolution_mac.h timing_mac.h cheats_mac.h $(GFX_H) ../gfx/nvn/dmsh_chain.h $(GAME_H) $(GAME_STAMP) $(VPX_LIB)
+dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h dm_input.h front.h gamepad_mac.h rumble_mac.h adaptive_trigger_mac.h bow_state_mac.h shield_state_mac.h input_focus_mac.h motion_mac.h motion_controller_mac.h motion_filter_mac.h motion_dsu_mac.h resolution_mac.h timing_mac.h cheats_mac.h $(GFX_H) ../gfx/nvn/dmsh_chain.h $(GAME_H) $(GAME_STAMP) $(VPX_LIB)
 	clang $(CFLAGS) -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework GameController -framework CoreHaptics -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
 # Finder-launchable Mac host. Keep dmhost's command-line and diagnostic defaults intact.
 # The packager raises MACOS_MIN when a cached shader library targets a newer OS.
@@ -63,7 +63,7 @@ gen/vpx_macos/%.o: $(VPX)/%.c $(wildcard $(VPX)/config/*.h)
 	clang -O2 -g -arch arm64 -mmacosx-version-min=26.0 -I$(VPX) -I$(VPX)/config -c $< -o $@
 $(VPX_APP_LIB): $(VPX_APP_OBJ)
 	rm -f $@; ar rcs $@ $^
-dmhost_app: $(SRC) ../macos/app_mac.m dm.h hle.h dm_input.h dm_padmap.h gamepad_mac.h rumble_mac.h input_focus_mac.h motion_mac.h motion_controller_mac.h motion_filter_mac.h motion_dsu_mac.h resolution_mac.h timing_mac.h cheats_mac.h front.h $(GFX_H) $(GAME_H) ../gfx/nvn/dmsh_chain.h $(GAME_STAMP) $(VPX_APP_LIB) Makefile FORCE
+dmhost_app: $(SRC) ../macos/app_mac.m dm.h hle.h dm_input.h dm_padmap.h gamepad_mac.h rumble_mac.h adaptive_trigger_mac.h bow_state_mac.h shield_state_mac.h input_focus_mac.h motion_mac.h motion_controller_mac.h motion_filter_mac.h motion_dsu_mac.h resolution_mac.h timing_mac.h cheats_mac.h front.h $(GFX_H) $(GAME_H) ../gfx/nvn/dmsh_chain.h $(GAME_STAMP) $(VPX_APP_LIB) Makefile FORCE
 	clang $(MACOS_APP_CFLAGS) -arch arm64 -mcpu=apple-m1 -mmacosx-version-min=$(MACOS_MIN) -DDM_MAC_APP -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(GAME_DIR) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) ../macos/app_mac.m $(GFX) $(VPX_APP_LIB) -framework Cocoa -framework QuartzCore -framework Metal -framework GameController -framework CoreHaptics -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO -framework UniformTypeIdentifiers
 
 clean:   # the host and everything make generates for it (gen/: the profile headers, the game stamp and the libvpx build; dmhost_* and *.dSYM beside them, as in .gitignore)

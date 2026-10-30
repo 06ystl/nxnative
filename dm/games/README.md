@@ -103,3 +103,34 @@ These are not profile keys: the tools read them from the game files each time, b
 4. **Shaders.** `DM_GAME=<id> [IOSOUT=…] dmsh_build.py <pkg> <cache>`, with a cache directory of the game's own. A full build also writes `c1_full.tsv` and `cb_extent.tsv` (local files, not committed). The chain version needs nothing: it is the same for every game.
 5. **Host bring-up.** Run `make -C dm/host GAME=<id>`, then work through the bring-up loop in docs/agents. Code that only fits one game is gated by its build ID (`dm_main_build()`), never left to run on every game.
 6. **IPA.** Use `GAME=<id> dm/ios/tools/build_ipa.sh`, or the NSP script, which now finds the profile.
+
+### Mac bow-state layout
+
+`mac_bow_state` is a read-only layout keyed by a registered main NSO build ID.
+Its numeric columns are, in order: simulation-mode global, PlayerInfo global,
+player-pointer field, charge-store global, charge field, bow-state field,
+actor-lifecycle field, active lifecycle value, drawing-state value, gameplay-mode
+value, equipped-bow link field, link-generation field, owner-generation field,
+owner-actor field, ready-state value, and reload-state value. Global offsets are
+main-relative; other fields are object-relative. The actor lifecycle field applies
+to both player and bow. Ready, reload and drawing values must be distinct.
+An invalid link generation is `0xffffffff`.
+
+Only add a layout after checking its binary references and observing pause,
+damage, equipment loss and scene teardown on that exact build. The host rejects
+unknown builds and disables feedback for unreadable or changing objects.
+
+### Mac shield-state layout
+
+`mac_shield_state` is keyed by a registered main NSO build ID. Its numeric columns
+are: simulation-mode global, PlayerInfo global, player-pointer field,
+actor-lifecycle field, active lifecycle value, gameplay-mode value, equipped-shield
+link field, link-generation field, owner-generation field, owner-actor field,
+player-flags field, guard mask, and shield-durability field. Globals are
+main-relative; other fields are object-relative. The lifecycle field applies to
+both player and shield. An invalid link generation is `0xffffffff`.
+
+Verify actual guarding against lock-on, two-handed weapons, bow aiming and menus.
+Verify durability loss during a real block before enabling the extra impact.
+Unknown main builds lose this row when deriving a profile.
+

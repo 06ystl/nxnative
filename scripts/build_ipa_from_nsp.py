@@ -610,10 +610,16 @@ def derive_profile(g, pdir, ver, d, mods):
     for p in g.dir.iterdir():
         if p.is_file() and p.name not in DERIVED_SKIP: shutil.copyfile(p, pdir / p.name)
     T, disp = '\t', nacp.version(d / 'control.nacp') or '?'
-    row = T.join(['build', ver, disp] + [f'{m}={build_id(d / "ExeFS" / m)}' for m in mods if (d / 'ExeFS' / m).exists()])
+    module_builds = {m: build_id(d / 'ExeFS' / m) for m in mods if (d / 'ExeFS' / m).exists()}
+    row = T.join(['build', ver, disp] + [f'{m}={bid}' for m, bid in module_builds.items()])
     out, put = [f'# Derived from game profile {g.dir} by scripts/build_ipa_from_nsp.py for {ver} ({disp}), a version that profile was not brought up on:',
                 '# its keys as they are, this version\'s build row, and shader tables made from this version\'s own files'], False
     for line in (g.dir / 'game.tsv').read_text(encoding='utf-8').splitlines():
+        cells = line.split(T)
+        # Fixed Mac addresses are valid only for the main build they describe.
+        # A derived version keeps general settings, not another build's adapters.
+        if cells[0] in ('mac_resolution_patch', 'mac_cheat_patch', 'mac_frame_step', 'mac_frame_guard', 'mac_bow_state', 'mac_shield_state'):
+            if len(cells) < 2 or cells[1] != module_builds.get('main'): continue
         if line.split(T, 1)[0] in ('build', 'package', 'shader_versions'):
             if not put: out += [row, f'package{T}{ver}', f'shader_versions{T}{ver}']; put = True
             continue

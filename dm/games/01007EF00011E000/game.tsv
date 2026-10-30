@@ -87,6 +87,11 @@ shader_note	Breath of the Wild shaders
 # Real-time VFR hook on Mac (default 60; DM_FPS=90/120 raises the cap):
 # build, compare site/word, explicit-override and ratio fields.
 mac_frame_step	cd57b23fa4bbad65803d9788c01821ee	0x151d484	0x1e202020	0x29	0x30	30
+# Read-only bow state: build, mode global, PlayerInfo global, player field,
+# charge global/field, state/lifecycle fields, active lifecycle/draw state/gameplay mode,
+# bow link, link generation, owner generation/actor fields. Verified in pause,
+# equipment loss, damage, empty-arrow, crouch/jump and scene-teardown captures.
+mac_bow_state	cd57b23fa4bbad65803d9788c01821ee	0x1e44ef0	0x1e13ed0	0x60	0x1e328d8	0xa0	0x1f8c	0x64	1	2	0	0xbc8	8	0x40	0x48	0	1
 mac_frame_guard	cd57b23fa4bbad65803d9788c01821ee	0x151d3e4	0x3940a408
 mac_frame_guard	cd57b23fa4bbad65803d9788c01821ee	0x151d404	0x1a880028
 mac_frame_guard	cd57b23fa4bbad65803d9788c01821ee	0x151d474	0xbd003261
@@ -94,3 +99,6 @@ mac_frame_guard	cd57b23fa4bbad65803d9788c01821ee	0x151d47c	0xbd403261
 mac_frame_guard	cd57b23fa4bbad65803d9788c01821ee	0x151d488	0x3900a268
 mac_frame_guard	cd57b23fa4bbad65803d9788c01821ee	0x151d490	0xbd003e61
 mac_frame_guard	cd57b23fa4bbad65803d9788c01821ee	0x127e740	0x52800041
+
+# Gameplay mode, live player/equipment link, isGuard flag and shield durability.
+mac_shield_state	cd57b23fa4bbad65803d9788c01821ee	0x1e44ef0	0x1e13ed0	0x60	0x64	1	0	0xbb0	8	0x40	0x48	0xc40	0x10	0xd4c

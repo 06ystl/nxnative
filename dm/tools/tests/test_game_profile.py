@@ -92,5 +92,47 @@ class TimingProfileTests(unittest.TestCase):
                     game.header(profile)
 
 
+class MacBowProfileTests(unittest.TestCase):
+    def test_build_gate_and_layout_validation(self):
+        profile = game.load('01007EF00011E000')
+        row = profile.values('mac_bow_state')[0]
+        self.assertIn('DM_GAME_MAC_BOW_STATE', game.header(profile))
+        for field, value in [(0, '0'*32), (1, '3'), (2, '-1'), (8, '256'), (14, '0x100000000'), (15, '2'), (16, '0')]:
+            with self.subTest(field=field):
+                candidate = copy.deepcopy(profile)
+                bad = row.copy(); bad[field] = value
+                candidate.rows = [(k,v) for k,v in candidate.rows if k != 'mac_bow_state']
+                candidate.rows.append(('mac_bow_state', bad))
+                with self.assertRaises(ValueError): game.header(candidate)
+        profile.rows.append(('mac_bow_state', row.copy()))
+        with self.assertRaisesRegex(ValueError, 'duplicate'): game.header(profile)
+
+    def test_other_profiles_have_no_bow_addresses(self):
+        for profile in game.all_games():
+            if not profile.values('mac_bow_state'):
+                self.assertIn('#define DM_GAME_MAC_BOW_STATE {0}', game.header(profile))
+
+
+class MacShieldProfileTests(unittest.TestCase):
+    def test_build_gate_and_layout_validation(self):
+        profile = game.load('01007EF00011E000')
+        row = profile.values('mac_shield_state')[0]
+        self.assertIn('DM_GAME_MAC_SHIELD_STATE', game.header(profile))
+        for field, value in [(0, '0'*32), (1, '3'), (2, '-1'), (5, '256'), (12, '0'), (13, '0x100000000')]:
+            with self.subTest(field=field):
+                candidate = copy.deepcopy(profile)
+                bad = row.copy(); bad[field] = value
+                candidate.rows = [(k,v) for k,v in candidate.rows if k != 'mac_shield_state']
+                candidate.rows.append(('mac_shield_state', bad))
+                with self.assertRaises(ValueError): game.header(candidate)
+        profile.rows.append(('mac_shield_state', row.copy()))
+        with self.assertRaisesRegex(ValueError, 'duplicate'): game.header(profile)
+
+    def test_other_profiles_have_no_shield_addresses(self):
+        for profile in game.all_games():
+            if not profile.values('mac_shield_state'):
+                self.assertIn('#define DM_GAME_MAC_SHIELD_STATE {0}', game.header(profile))
+
+
 if __name__ == '__main__':
     unittest.main()

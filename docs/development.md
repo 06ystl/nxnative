@@ -428,6 +428,83 @@ outputs, long holds, renewal, zero/focus/
 disconnect/shutdown, background suppression and engine errors. Motor feel and device
 capabilities require a connected controller.
 
+### Mac adaptive bow triggers
+
+A selected DualSense uses R2 slope feedback on a game build with a verified
+`mac_bow_state` profile row. `bow_state_mac.c` binds only the matching main NSO
+build and checks that its global offsets lie in the loaded data region. Other
+builds retain ordinary controller input and rumble without bow-state reads.
+
+The existing serial feedback queue calls `adaptive_trigger_mac.m`. It samples
+at most 50 times per second. A validated ready/reload state preloads a 0.10/0.35
+slope over the full 0.0–1.0 trigger travel, before the digital ZR threshold or reload
+animation completes. Physical travel is handled by the controller, without a host
+write for every input change. Actual game charge raises the slope to 0.15/0.55;
+the normalized charge ramp is capped at 2/s, with at most 50 ms of catch-up after
+a scheduling gap. Only changed 1/32 charge buckets are sent. Full charge holds a
+plateau; it does not grow indefinitely. This is independent of `DM_RUMBLE_GAIN`.
+No game code, frame timing or shader inputs are modified for this feature.
+
+The native slope remains enabled during charge updates. Released R2 (value <=
+0.02) resets to the light baseline even if game animation still reports a draw.
+A draw/reload-to-ready transition while held is cancellation, not a new idle
+preload. Cancellation, invalid state, device/session changes or a changed player/
+bow identity require release before rearming. Unclassified states disable output.
+The SDK exposes discrete trigger positions; a mathematical slope does not imply
+infinitely smooth physical resistance.
+
+The reader uses bounded Mach memory copies rather than directly dereferencing
+objects on another thread. It checks gameplay mode, the player's active
+lifecycle, ready/reload/draw state, and the equipped bow link's generation and actor
+lifecycle, then rechecks these identities and state after copying. Only drawing
+reads charge; ready/reload discard any stale charge. Read failures or
+transitions yield no effect. The feedback queue makes no calls into game code and
+acquires no guest locks. The live object and charge are never cached across ticks.
+
+BotW's interruption captures show why each condition matters: inventory and map
+pause freeze state 2/charge 1; damage can leave charge 1 with state 0; unequipping
+can retain both state 2 and charge 1; returning to title can retain the old player
+pointer after its lifecycle becomes inactive. Empty-arrow draws are still real
+draw animations. A charge observation alone does not establish an arrow was fired.
+
+Window/session ineligibility, replacing a controller, disconnect and shutdown
+clear any trigger effect owned by this backend on the feedback queue. Visible
+background play follows the same eligibility as controller input. Scripted game
+runs and the unit tests do not attach physical output. The tests use fake native
+endpoints and exercise failed reads, mid-read lifecycle changes and release paths:
+
+```
+make -C dm/host/tests GAME=01007EF00011E000 run-mac-bow
+```
+
+USB slope/release effects and a normal haptic pulse were confirmed by the user on
+2026-10-30. The user accepted v4.9's preload, full-travel slope and charge ramp
+in-game. Bluetooth acceptance still requires manual testing. This adapter does
+not synthesize high-definition haptic audio.
+
+### Mac adaptive shield trigger
+
+On a verified `mac_shield_state` build, the same feedback queue reads the game's
+actual guard flag and the equipped shield's lifecycle, generation and durability.
+L2 uses a 0.10/0.28 full-travel slope only while the player is guarding and the
+physical trigger is held. Lock-on alone, a drawn two-handed weapon, bow aiming,
+menus and missing/broken shields do not enable it. The R2 bow curve is unchanged.
+
+A durability decrease on the same shield after a guarding sample adds a 120 ms
+impact, from a 0.16/0.43 slope back down to the guard baseline. Samples more than
+100 ms apart do not replay an old impact. Swaps, repairs, unguarded wear and
+pause/resume cannot generate one. Release, invalid state and shield break clear
+the effect immediately. Perfect parries and cheats that prevent durability loss
+do not generate this extra L2 impact; ordinary game rumble continues independently.
+
+For BotW 1.9.0, `isGuard` resolves through the player's vtable to a bit read,
+and the equipped shield's durability getter returns an object field. Both offsets
+are profile data gated by the main NSO build ID. Windowless tests confirmed an
+actual blocked explosion, menu freezing, unequipping, bow aiming and two-handed
+lock-on. Production output is tested through fake native endpoints, with no
+physical effects sent automatically. Shield resistance and impact feel require
+the user's manual controller test.
+
 ### Mac controller motion
 
 Leave `DM_MOTION_SOURCE` out of the Mac app's user `env.txt` to use the current

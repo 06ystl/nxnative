@@ -14,6 +14,7 @@
 #include <string.h>
 #include "dm_input.h"
 #include "rumble_mac.h"
+#include "adaptive_trigger_mac.h"
 
 enum { RUMBLE_TICK_MS = 10, RUMBLE_EVENT_S = 30, RUMBLE_RENEW_S = 25, RUMBLE_RETRY_S = 5 };
 static dispatch_queue_t g_rumble_queue;
@@ -158,6 +159,7 @@ static void rumble_play(unsigned side, dm_vibration_value value, uint64_t now) {
 }
 static void rumble_accept(void);
 static void rumble_tick(uint64_t now) { // rumble queue
+    dm_adaptive_trigger_tick(now);
     if (!g_rumble_active || g_rumble_closed || !g_rumble_haptics) return;
     dm_vibration_value values[2];
     pthread_mutex_lock(&g_rumble_mu); memcpy(values,g_rumble_want,sizeof values); pthread_mutex_unlock(&g_rumble_mu);
@@ -173,7 +175,8 @@ static void rumble_accept(void) { // rumble queue
     int on = g_rumble_active && !g_rumble_closed && g_rumble_haptics != nil;
     pthread_mutex_lock(&g_rumble_mu); g_rumble_accepting = on; if (!on) rumble_clear_want(); pthread_mutex_unlock(&g_rumble_mu);
     if (!on) for (unsigned s = 0; s < 2; s++) rumble_retire(s);
-    if (g_rumble_timer) dispatch_source_set_timer(g_rumble_timer, on ? dispatch_time(DISPATCH_TIME_NOW,0) : DISPATCH_TIME_FOREVER,
+    int tick = g_rumble_active && !g_rumble_closed && (g_rumble_haptics || dm_adaptive_trigger_available());
+    if (g_rumble_timer) dispatch_source_set_timer(g_rumble_timer, tick ? dispatch_time(DISPATCH_TIME_NOW,0) : DISPATCH_TIME_FOREVER,
                                                   RUMBLE_TICK_MS * NSEC_PER_MSEC, NSEC_PER_MSEC);
 }
 void dm_rumble_mac_start(void) {
@@ -198,6 +201,7 @@ void dm_rumble_mac_attach(GCController *controller) {
     GCDeviceHaptics *haptics = controller.haptics;
     NSSet *localities = haptics.supportedLocalities;
     rumble_sync(^{
+        dm_adaptive_trigger_attach(controller);
         if (g_rumble_controller == controller && g_rumble_haptics == haptics) { rumble_accept(); return; }
         for (unsigned s = 0; s < 2; s++) { rumble_retire(s); g_rumble_retry[s] = 0; }
         pthread_mutex_lock(&g_rumble_mu); rumble_clear_want(); pthread_mutex_unlock(&g_rumble_mu);
@@ -211,11 +215,12 @@ void dm_rumble_mac_attach(GCController *controller) {
 }
 void dm_rumble_mac_set_active(int active) {
     dm_rumble_mac_start();
-    rumble_sync(^{ g_rumble_active = !!active; rumble_accept(); });
+    rumble_sync(^{ g_rumble_active = !!active; dm_adaptive_trigger_set_active(active); rumble_accept(); });
 }
 void dm_rumble_mac_shutdown(void) {
     if (!g_rumble_queue) return;
     rumble_sync(^{
+        dm_adaptive_trigger_shutdown();
         g_rumble_closed = 1; rumble_accept();
         g_rumble_haptics = nil; g_rumble_controller = nil;
     });
