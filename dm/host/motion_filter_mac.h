@@ -112,4 +112,3 @@ static int filter_packet(motion_filter *f, const motion_packet *p) {
     f->state.attributes=1; direction(f->q,f->state.direction); direction(f->raw_q,f->raw_direction);
     return 1;
 }
-

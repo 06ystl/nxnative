@@ -342,6 +342,27 @@ binding changes, encoder boundaries and buffer-content updates. The three GPU
 regression tests use private controls under `NVN_OPTIMIZATION_TEST` to compare
 cached/batched and original paths; production builds expose no such controls.
 
+### Mac feature boundaries
+
+For a Mac change, start with its owner below. Keep its profile rows, build inputs
+and regression tests in the same commit. The host Makefile groups front-end,
+feedback, motion and game-adapter sources; the test Makefile composes their
+runners into `run` without executing a test twice.
+
+| Feature | Implementation | Focused validation (`make -C dm/host/tests GAME=<id> …`) |
+|---|---|---|
+| Window eligibility and controller input | `front_mac.m`, `input_focus_mac.m`, `gamepad_mac.m` | `run-mac-input` |
+| Controller/phone motion | `motion_mac.m`, `motion_controller_mac.m`, `motion_dsu_mac.c`, shared `motion_filter_mac.h` | `run-mac-input` |
+| Ordinary grip rumble | `rumble_mac.m`, with SDK vibration ABI in `hle_hid.c` | `run-mac-input` |
+| Adaptive R2/L2 triggers | `adaptive_trigger_mac.m`, read-only `bow_state_mac.c` / `shield_state_mac.c` | `run-mac-bow` |
+| Original footstep audio haptics | `audio_footsteps_mac.c` → `audio_wave.c` → `audio_haptics_usb_mac.c` | `run-audio-haptics` |
+| Resolution, frame timing and cheats | `resolution_mac.c`, `timing_mac.c`, `cheats_mac.c`; loader binds verified profiles | `run-mac-input`, `run-cheats` |
+
+Fixed game addresses belong in the game's build-gated profile. Shared output
+ownership stays on the serial feedback queue in `rumble_mac.m`; audio sample
+production stays on the serialized AudioRenderer path. Standalone test targets
+use simulated endpoints and do not command physical controller effects.
+
 ### Mac physical controllers
 
 Pair a controller in macOS or connect it over USB, then keep the game window visible. It can remain on another display while a browser has keyboard focus. `dm/host/gamepad_mac.m` subscribes to GameController connection/disconnection notifications and samples already-connected extended gamepads at startup. The first supported device supplies the host's single player; connecting another does not replace it, and disconnecting the active one selects a remaining supported device. Non-extended profiles are ignored.
