@@ -66,8 +66,10 @@ void hle_signal_system_event(void *event) { (void)event; }
 }
 @end
 @interface RumblePad : NSObject
+@property GCExtendedGamepad *extendedGamepad;
 @property RumbleHaptics *haptics;
 @property NSString *vendorName;
+@property NSString *productCategory;
 @end
 @implementation RumblePad
 @end
@@ -107,6 +109,21 @@ static void test_concurrent_publication(void) {
     CHECK(atomic_load(&concurrent_calls)==160&&atomic_load(&concurrent_peak)==1,"concurrent SDK calls publish in one order");
     CHECK(actual.amplitude_low==atomic_load(&concurrent_last),"actual-value snapshot matches the last published output");
     dm_vibration_send=sink;
+}
+static void test_gain_config(void) {
+    unsetenv("DM_RUMBLE_GAIN");CHECK(rumble_read_gain()==1,"unset gain preserves the original response");
+    const char *valid[]={"0","0.5","1","3","10","20","100"};
+    const float expected[]={0,.5f,1,3,10,20,100};
+    for(unsigned i=0;i<sizeof expected/sizeof *expected;i++) {
+        setenv("DM_RUMBLE_GAIN",valid[i],1);
+        CHECK(rumble_read_gain()==expected[i],"gain accepts documented mute, fractional and amplified values");
+    }
+    const char *invalid[]={"","-1","nan","inf","1e999","3x"};
+    for(unsigned i=0;i<sizeof invalid/sizeof *invalid;i++) {
+        setenv("DM_RUMBLE_GAIN",invalid[i],1);
+        CHECK(rumble_read_gain()==1,"invalid gain falls back to the original response");
+    }
+    unsetenv("DM_RUMBLE_GAIN");
 }
 static void test_hid(void) {
     uint32_t id=0, handles[3]={0xdeadbeef,0xdeadbeef,0xdeadbeef};
@@ -174,6 +191,60 @@ static void test_split(void) {
     CHECK(next.haptics.engines.count==2&&engine.players.lastObject.stops==1,"engine reset rebuilds feedback for the current value");
     attach(nil);CHECK(next.haptics.engines.lastObject.players.lastObject.stops==1,"disconnect stops rumble");
 }
+static void test_xbox_response(void) {
+    uint64_t now=clock_gettime_nsec_np(CLOCK_MONOTONIC);
+    RumblePad *p=pad(1);p.productCategory=GCProductCategoryXboxOne;
+    attach(p);dm_rumble_mac_set_active(1);
+    // The captured game ramp peaked here for only about 10 ms.
+    send_value(0,.1125f,0,160,320);send_value(1,.03f,.04f,160,320);tick(now);
+    RumblePlayer *left=p.haptics.engines[0].players.lastObject,*right=p.haptics.engines[1].players.lastObject;
+    CHECK(fabsf(left.intensity-sqrtf(.1125f))<1e-6&&fabsf(right.intensity-sqrtf(.05f))<1e-6,"Xbox response maps both bands independently per side");
+    uint32_t handle=vib_handle(connected_id(),0);dm_vibration_value actual;
+    h_hid_VibActual(&actual,&handle);
+    CHECK(actual.amplitude_low==.1125f&&actual.amplitude_high==0,"Xbox adaptation does not change guest actual values");
+    float previous=0;
+    float levels[]={.001f,.01f,.1125f,.5f,1};
+    for(unsigned i=0;i<sizeof levels/sizeof *levels;i++) {
+        send_value(0,levels[i],0,160,320);tick(now+(i+1)*10000000ull);
+        CHECK(left.intensity>previous&&left.intensity<=1,"Xbox response remains monotonic and bounded");
+        previous=left.intensity;
+    }
+    CHECK(left.intensity==1,"Xbox full strength remains full strength");
+    send_value(0,0,0,160,320);tick(now+70000000ull);
+    CHECK(left.stops==1&&!right.stops,"Xbox silence immediately stops only the requested side");
+    RumblePad *generic=pad(1);attach(generic);send_value(0,.1125f,0,160,320);tick(now+80000000ull);
+    CHECK(fabsf(generic.haptics.engines[0].players.lastObject.intensity-.1125f)<1e-6,"switching from Xbox restores the generic response");
+    CHECK(right.stops==1,"controller change stops the remaining Xbox output");
+    attach(nil);
+}
+static void test_output_gain(void) {
+    uint64_t now=clock_gettime_nsec_np(CLOCK_MONOTONIC);
+    setenv("DM_RUMBLE_GAIN","3",1);
+    rumble_sync(^{g_rumble_gain=rumble_read_gain();});
+    RumblePad *p=pad(1);attach(p);
+    send_value(0,.2f,0,160,320);send_value(1,0,.1f,160,320);tick(now);
+    RumblePlayer *left=p.haptics.engines[0].players.lastObject,*right=p.haptics.engines[1].players.lastObject;
+    CHECK(fabsf(left.intensity-.6f)<1e-6&&fabsf(right.intensity-.3f)<1e-6,"configured gain scales independent outputs on generic controllers");
+    CHECK(left.configuredBeforeStart&&right.configuredBeforeStart,"amplified values are configured before playback");
+    p=pad(1);p.productCategory=GCProductCategoryXboxOne;attach(p);
+    send_value(0,.1125f,0,160,320);send_value(1,.01f,0,160,320);tick(now+10000000ull);
+    left=p.haptics.engines[0].players.lastObject;right=p.haptics.engines[1].players.lastObject;
+    CHECK(left.intensity==1&&fabsf(right.intensity-.3f)<1e-6,"gain follows the Xbox response and clamps peaks to full strength");
+    uint32_t handle=vib_handle(connected_id(),0);dm_vibration_value actual;
+    h_hid_VibActual(&actual,&handle);
+    CHECK(actual.amplitude_low==.1125f,"output gain leaves game-visible vibration values unchanged");
+    send_value(0,0,0,160,320);tick(now+20000000ull);
+    CHECK(left.stops==1&&!right.stops,"amplification does not extend an explicitly stopped pulse");
+    setenv("DM_RUMBLE_GAIN","20",1);rumble_sync(^{g_rumble_gain=rumble_read_gain();});
+    send_value(0,.005f,0,160,320);tick(now+25000000ull);
+    left=p.haptics.engines[0].players.lastObject;
+    CHECK(left.intensity==1,"gain above ten brings the captured weak ramp to full API intensity");
+    send_value(0,0,0,160,320);tick(now+26000000ull);
+    CHECK(left.stops==1,"high gain still stops without extending the pulse");
+    setenv("DM_RUMBLE_GAIN","0",1);rumble_sync(^{g_rumble_gain=rumble_read_gain();});
+    tick(now+30000000ull);CHECK(right.stops==1,"zero gain mutes remaining output");
+    attach(nil);unsetenv("DM_RUMBLE_GAIN");rumble_sync(^{g_rumble_gain=rumble_read_gain();});
+}
 static void test_shared_and_errors(void) {
     uint64_t now=clock_gettime_nsec_np(CLOCK_MONOTONIC);
     RumblePad *p=pad(0);attach(p);
@@ -214,6 +285,6 @@ static void test_shared_and_errors(void) {
     CHECK(p.haptics.engines.count==1,"shutdown cannot restart feedback");
 }
 int main(void) { @autoreleasepool {
-    test_hid();test_concurrent_publication();test_split();test_shared_and_errors();
+    test_gain_config();test_hid();test_concurrent_publication();test_split();test_xbox_response();test_output_gain();test_shared_and_errors();
     printf("RUMBLE_MAC checks=%d failed=%d\n",checks,failed);return failed!=0;
 } }

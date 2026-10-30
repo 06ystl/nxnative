@@ -21,15 +21,29 @@ static dispatch_source_t g_rumble_timer;
 static char g_rumble_queue_key;
 static GCController *g_rumble_controller;
 static GCDeviceHaptics *g_rumble_haptics;
-static int g_rumble_active, g_rumble_closed, g_rumble_split;
+static int g_rumble_active, g_rumble_closed, g_rumble_split, g_rumble_xbox;
 static CHHapticEngine *g_rumble_engines[2];
 static id<CHHapticPatternPlayer> g_rumble_players[2];
 static CHHapticPattern *g_rumble_pattern;
 static uint64_t g_rumble_retry[2], g_rumble_started[2];
 static float g_rumble_intensity[2] = {-1,-1}, g_rumble_sharpness[2] = {-1,-1};
+static float g_rumble_gain = 1;
 static pthread_mutex_t g_rumble_mu = PTHREAD_MUTEX_INITIALIZER;
 static int g_rumble_accepting;
 static dm_vibration_value g_rumble_want[2] = {{0,160,0,320}, {0,160,0,320}};
+
+static float rumble_read_gain(void) {
+    const char *text = getenv("DM_RUMBLE_GAIN");
+    if (!text) return 1;
+    char *end;
+    float gain = strtof(text, &end);
+    if (end == text || *end || !isfinite(gain) || gain < 0) {
+        fprintf(stderr,"【红】DM_RUMBLE_GAIN=%s: must be finite and nonnegative; using 1\n",text);
+        return 1;
+    }
+    fprintf(stderr,"[dm] Mac rumble gain: %.2fx (DM_RUMBLE_GAIN)\n",gain);
+    return gain;
+}
 
 static void rumble_sync(dispatch_block_t block) {
     if (dispatch_get_specific(&g_rumble_queue_key)) block();
@@ -111,6 +125,10 @@ static int rumble_params(unsigned side, id<CHHapticPatternPlayer> player, float 
 }
 static void rumble_play(unsigned side, dm_vibration_value value, uint64_t now) { // rumble queue
     float intensity = fminf(1, sqrtf(rumble_energy(value)));
+    // Captured short HD-rumble ramps were imperceptible on Xbox at the linear
+    // level. This response made the same waveform perceptible without extending it.
+    if (g_rumble_xbox) intensity = sqrtf(intensity);
+    intensity = fminf(1, g_rumble_gain * intensity);
     if (intensity <= 0) { rumble_stop_player(side); return; }
     if (now < g_rumble_retry[side] || !rumble_engine(side)) return;
     float sharpness = rumble_sharpness(value);
@@ -138,6 +156,7 @@ static void rumble_play(unsigned side, dm_vibration_value value, uint64_t now) {
     } else if (intensity != g_rumble_intensity[side] || sharpness != g_rumble_sharpness[side])
         rumble_params(side,g_rumble_players[side],intensity,sharpness);
 }
+static void rumble_accept(void);
 static void rumble_tick(uint64_t now) { // rumble queue
     if (!g_rumble_active || g_rumble_closed || !g_rumble_haptics) return;
     dm_vibration_value values[2];
@@ -160,6 +179,7 @@ static void rumble_accept(void) { // rumble queue
 void dm_rumble_mac_start(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
+        g_rumble_gain = rumble_read_gain();
         g_rumble_queue = dispatch_queue_create("dm.controller.rumble", DISPATCH_QUEUE_SERIAL);
         dispatch_queue_set_specific(g_rumble_queue,&g_rumble_queue_key,&g_rumble_queue_key,NULL);
 #ifndef DM_RUMBLE_TEST
@@ -178,10 +198,11 @@ void dm_rumble_mac_attach(GCController *controller) {
     GCDeviceHaptics *haptics = controller.haptics;
     NSSet *localities = haptics.supportedLocalities;
     rumble_sync(^{
-        if (g_rumble_controller == controller && g_rumble_haptics == haptics) return;
+        if (g_rumble_controller == controller && g_rumble_haptics == haptics) { rumble_accept(); return; }
         for (unsigned s = 0; s < 2; s++) { rumble_retire(s); g_rumble_retry[s] = 0; }
         pthread_mutex_lock(&g_rumble_mu); rumble_clear_want(); pthread_mutex_unlock(&g_rumble_mu);
         g_rumble_controller = controller; g_rumble_haptics = haptics;
+        g_rumble_xbox = [controller.productCategory isEqualToString:GCProductCategoryXboxOne];
         g_rumble_split = [localities containsObject:GCHapticsLocalityLeftHandle] && [localities containsObject:GCHapticsLocalityRightHandle];
         rumble_accept();
         if (controller) fprintf(stderr,"[dm] Mac rumble: %s; %s\n",controller.vendorName.UTF8String ?: "controller",

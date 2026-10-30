@@ -185,6 +185,7 @@ or shell quotes. The settings below remain supported:
 | `DM_NVN_TSV`, `DM_NVN_SHOT`, `DM_PROBE` | Frame measurements, engine screenshots and instruction probes. These are diagnostic tools; probes can slow the game. See [debugging](agents/05-debugging.md) and [graphics](agents/04-graphics.md) |
 | `DM_WINDOW`, `DM_AUDIO` | Native window and audio output; the packaged Mac app supplies both automatically. `dmhost` diagnostics opt in with `1`; `DM_AUDIO=0` selects the silent sink |
 | `DM_GAME_RES` | BotW 1.9.0 Mac: `1280x720` or `1920x1080`, including the scene, HUD and output. Unset retains native mode-dependent sizes. The local 1080p app bundles `1920x1080`; a user setting overrides it. D2R retains its existing KRES size parameters |
+| `DM_RUMBLE_GAIN` | Mac controller output multiplier, any finite nonnegative value, default `1`. `3` strengthens weak effects; `20` brings weaker waveform segments up to full API intensity; `0` mutes. Output remains in the system's 0–1 range. Applies after the Xbox response; restart after changing |
 
 `DM_GAME` (tools) and `GAME` (Make) select the profile at build time. A packaged
 app already contains its profile; these do not switch games at launch.
@@ -329,7 +330,15 @@ while the game is running. The connection must expose `GCController.haptics`.
 The log reports `Mac rumble: ... independent left/right handles`, `shared default
 haptics`, or `haptics unavailable on this connection` when a controller is selected.
 A missing haptics capability does not affect buttons or sticks. No environment
-switch is required. Short physical Xbox pulses through this backend have been confirmed; in-game vibration remains under investigation, so API success alone is not physical acceptance.
+switch is required.
+
+If feedback feels too weak, add `DM_RUMBLE_GAIN=3` to the Mac app's user
+`env.txt` and restart. `1` keeps the v4.3 output, `2` or `3` increases it,
+and `0` mutes it. Any finite nonnegative value is supported, including fractions
+and values above 10. For example, `20` brings more weak segments to full intensity.
+The multiplier applies to any selected controller after its response mapping,
+caps output at full strength, and preserves pulse timing. Larger values make
+more of a waveform reach that cap. Invalid settings log an error and use `1`.
 
 `hle_hid.c` exposes the virtual full-key/handheld controller's two SDK vibration
 handles when the Mac sink is installed, even before a physical controller connects.
@@ -339,7 +348,15 @@ their existing no-device behavior until they install a sink.
 
 `rumble_mac.m` samples the newest values on a serial queue at 100 Hz. Guest calls
 only publish a small snapshot under a mutex. Each side's low/high amplitudes combine
-as `min(1, sqrt(low*low + high*high))`; amplitude-weighted frequency maps to Core
+as `min(1, sqrt(low*low + high*high))`. Controllers identified by
+`GCProductCategoryXboxOne` apply a square-root response to that combined level.
+In a captured Breath of the Wild fall waveform (about 190 ms, peak 0.1125), only
+this response was perceptible in a physical comparison; the unchanged waveform
+and the reference project's quiet gate were not. The user also confirmed physical
+rumble with the square-root response in the v4.3 game build. The output multiplier
+is configurable in v4.4. This adaptation preserves zeros,
+timing, side routing and guest-reported values, and leaves other controller categories
+on the original response. Amplitude-weighted frequency maps to Core
 Haptics sharpness over 40–1250 Hz. This approximates Switch HD rumble on ordinary
 controller motors. Controllers exposing both handle localities use separate engines;
 default-only devices use one engine and the stronger side, avoiding overlapping
@@ -366,7 +383,8 @@ make -C dm/host/tests GAME=01007EF00011E000 build/t_rumble_mac build/t_gamepad_m
 
 The rumble test drives the production HID and feedback state machine with simulated
 hardware endpoints; Core Haptics builds the real pattern. It covers ABI layouts,
-handheld handles, band mapping, shared outputs, long holds, renewal, zero/focus/
+handheld handles, gain parsing/scaling/muting, Xbox response and controller switching, shared
+outputs, long holds, renewal, zero/focus/
 disconnect/shutdown, background suppression and engine errors. Motor feel and device
 capabilities require a connected controller.
 

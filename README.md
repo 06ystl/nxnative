@@ -116,7 +116,7 @@ Physical controllers: pair over Bluetooth or plug in over USB, then keep the gam
 
 Controller rumble on Mac: turn on vibration in the game's settings. Newly rebuilt Mac apps send feedback automatically to the selected controller when macOS supports vibration on that connection. Hiding or minimizing the game, display sleep, inactive user sessions, controller disconnection and quitting stop feedback; focusing another app while the game stays visible does not. No environment variables are needed.
 
-Phone motion on Mac: an Xbox controller can supply buttons and sticks while an iPhone supplies gyro input for aiming and motion puzzles. Install [MotionSourceiOS](https://github.com/shiftinv/MotionSourceiOS/releases/tag/v1.1.0) on the phone, connect both devices to the same local network, allow Local Network access, select **Portrait**, leave the accelerometer enabled and tap **Start Server**. In the Mac game's menu bar, choose **Motion → Connect Phone…**, enter the phone's displayed IP address and port (default `26760`), then keep the phone still for one second. **Phone motion connected** confirms calibration. Keep MotionSource in the foreground and the phone screen awake. **Motion → Calibrate…** measures drift and resets the heading; **Disconnect Phone** turns motion off. The app remembers the connection and reconnects automatically. See [phone motion](docs/development.md#mac-phone-motion) for orientation and troubleshooting.
+If rumble feels weak, put `DM_RUMBLE_GAIN=3` in your Mac `env.txt` and restart. The multiplier accepts any finite nonnegative value: `1` keeps the original strength, `0` mutes, and values such as `20` bring weaker parts of an effect up to full API intensity without extending its duration. Output stays within the system's 0–1 range. It applies to Xbox and other supported controllers.
 
 Saves are in `~/Library/Application Support/org.nxnative.<title-id>/save`, logs in `~/Library/Logs/org.nxnative.<title-id>/log.txt` (title ID in lowercase). Put `env.txt` next to `save/` for settings. The minimum OS follows the bundled shader libraries: cached libraries from a newer SDK can raise it above macOS 26. Mac compatibility varies by game; Mario's menu and dialogue text currently render blank.
 
@@ -277,7 +277,7 @@ Mac 键位：WASD = 左摇杆，方向键 = 十字键，J/K/U/I = A/B/X/Y，Q/E 
 
 Mac 手柄震动：在游戏设置中打开震动。重新构建的 Mac App 会自动向当前手柄发送反馈，需要 macOS 支持该手柄在当前连接方式下的震动功能。隐藏或最小化游戏、显示器休眠、用户会话停用、断开手柄或退出时会停止震动；游戏仍可见时，切换到其他应用不会停止震动，无需设置环境变量。
 
-Mac 手机体感：可以用 Xbox 手柄负责按键和摇杆，同时用 iPhone 提供瞄准和体感机关需要的陀螺仪输入。在手机安装 [MotionSourceiOS](https://github.com/shiftinv/MotionSourceiOS/releases/tag/v1.1.0)，让两台设备连接同一局域网，允许“本地网络”访问，选择 **Portrait**、保持加速度计开启，然后点 **Start Server**。在 Mac 游戏菜单栏选择 **Motion → Connect Phone…**，填写手机显示的 IP 和端口（默认 `26760`），连接后让手机静止一秒。菜单显示 **Phone motion connected** 即表示校准完成。游玩时保持 MotionSource 在前台、手机屏幕常亮。**Motion → Calibrate…** 用于测量漂移和重置朝向；**Disconnect Phone** 用于关闭体感。App 会记住连接并自动重连。方向设置和排查方法见[手机体感说明](docs/development.md#mac-phone-motion)。
+如果震动偏弱，可在 Mac 用户 `env.txt` 中设置 `DM_RUMBLE_GAIN=3` 后重启。倍率接受任意非负有限数值：`1` 保持原有强度，`0` 关闭震动，`20` 等更高倍率可让效果中较弱的片段也达到接口满强度，不延长震动时长。输出仍在系统允许的 0–1 范围内。此参数对 Xbox 和其他受支持的手柄均生效。
 
 存档位于 `~/Library/Application Support/org.nxnative.<标题号>/save`，日志位于 `~/Library/Logs/org.nxnative.<标题号>/log.txt`（标题号小写）。在 `save/` 旁放置 `env.txt` 可以调整设置。最低系统版本取决于包内着色器库：复用较新 SDK 生成的缓存时，可能高于 macOS 26。各游戏的 Mac 兼容性不同；目前马力欧的菜单和对话文字存在空白问题。
 

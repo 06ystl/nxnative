@@ -29,7 +29,7 @@ run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $
 	$(B)/t_shared_font
 	$(B)/t_vorbis
 	$(B)/t_vorbis_divides
-$(GAME_H):
+$(GAME_H): ../../games/game.py ../../games/$(GAME)/game.tsv
 	$(MAKE) -C .. game_profile GAME=$(GAME)
 $(B)/t_touch: t_touch.c ../hle_touch.c ../front.h ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wno-unused-function -I.. $(GINC) -o $@ t_touch.c ../hle_touch.c
@@ -87,11 +87,11 @@ run-mac-input: $(B)/t_padmap $(B)/t_gamepad_mac $(B)/t_hid_axes_script $(B)/t_ru
 
 $(B)/t_padmap: t_padmap.c ../dm_padmap.h ../dm_input.h | $(B)
 	clang -O1 -Wall -Werror -o $@ t_padmap.c
-$(B)/t_gamepad_mac: t_gamepad_mac.m ../gamepad_mac.m ../gamepad_mac.h ../rumble_mac.m ../rumble_mac.h ../input_focus_mac.m ../input_focus_mac.h ../dm_padmap.h ../dm_input.h ../hle_hid.c ../hle.h ../dm.h ../hle_touch.c hid_test_clock.c | $(B)
+$(B)/t_gamepad_mac: t_gamepad_mac.m ../gamepad_mac.m ../gamepad_mac.h ../rumble_mac.m ../rumble_mac.h ../input_focus_mac.m ../input_focus_mac.h ../dm_padmap.h ../dm_input.h ../hle_hid.c ../hle.h ../dm.h ../hle_touch.c hid_test_clock.c $(GAME_H) | $(B)
 	clang -O1 -Wall -Werror -Wno-unused-function -fobjc-arc $(GINC) -I.. -o $@ ../hle_touch.c hid_test_clock.c t_gamepad_mac.m ../rumble_mac.m -framework Cocoa -framework GameController -framework CoreHaptics
 $(B)/t_hid_axes_script: t_hid_axes_script.c ../hle_hid.c ../hle.h ../dm.h ../dm_input.h ../hle_touch.c hid_test_clock.c | $(B)
 	clang -O1 -Wall -Werror -Wno-unused-function $(GINC) -I.. -o $@ ../hle_touch.c hid_test_clock.c t_hid_axes_script.c
-$(B)/t_rumble_mac: t_rumble_mac.m ../rumble_mac.m ../rumble_mac.h ../hle_hid.c ../hle.h ../dm.h ../dm_input.h ../hle_touch.c hid_test_clock.c | $(B)
+$(B)/t_rumble_mac: t_rumble_mac.m ../rumble_mac.m ../rumble_mac.h ../hle_hid.c ../hle.h ../dm.h ../dm_input.h ../hle_touch.c hid_test_clock.c $(GAME_H) | $(B)
 	clang -O1 -Wall -Werror -Wno-unused-function -fobjc-arc $(GINC) -I.. -o $@ ../hle_touch.c hid_test_clock.c t_rumble_mac.m -framework Foundation -framework GameController -framework CoreHaptics
 $(B)/t_motion_dsu: t_motion_dsu.c ../motion_dsu_mac.c ../motion_dsu_mac.h ../hle_hid.c ../hle.h ../dm.h ../dm_input.h ../hle_touch.c hid_test_clock.c | $(B)
 	clang -O2 -Wall -Wextra -Werror -Wno-unused-function -Wno-missing-field-initializers $(GINC) -I.. -o $@ ../hle_touch.c hid_test_clock.c t_motion_dsu.c
