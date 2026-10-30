@@ -47,6 +47,25 @@ class ResolutionProfileTests(unittest.TestCase):
             game.header(self.profile)
 
 
+class CheatProfileTests(unittest.TestCase):
+    def test_cheat_metadata_is_restricted_to_verified_builds_and_unique_words(self):
+        base = game.load('01007EF00011E000')
+        for field, value in [(0, '0'*32), (1, 'health,all'), (2, '3'), (3, '-1'), (4, '0x100000000')]:
+            with self.subTest(field=field):
+                profile = copy.deepcopy(base)
+                row = profile.values('mac_cheat_patch')[0].copy(); row[field] = value
+                profile.rows = [(k,v) for k,v in profile.rows if k != 'mac_cheat_patch']
+                profile.rows.append(('mac_cheat_patch', row))
+                with self.assertRaises(ValueError): game.header(profile)
+        profile = copy.deepcopy(base)
+        profile.rows.append(('mac_cheat_patch', profile.values('mac_cheat_patch')[0].copy()))
+        with self.assertRaisesRegex(ValueError, 'duplicate'): game.header(profile)
+
+    def test_all_profiles_generate_cheat_tables(self):
+        for profile in game.all_games():
+            self.assertIn('#define DM_GAME_MAC_CHEAT_PATCHES ', game.header(profile))
+
+
 class TimingProfileTests(unittest.TestCase):
     def setUp(self):
         self.profile = copy.deepcopy(game.load('01007EF00011E000'))

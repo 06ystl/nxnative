@@ -29,6 +29,22 @@ build	v1114112	1.9.0	main=cd57b23fa4bbad65803d9788c01821ee	subsdk0=f39f4c431234c
 package	v1114112
 shader_versions	v1114112
 
+# Optional Mac cheats ported from the user's 1.8.2 DE0B6AC4EFC1DDA7 table.
+# The 1.9.0 sites were checked by disassembly; offsets differ by code region.
+# Fields: main build, option, offset, original word, replacement word.
+# health: skip the current-heart store; stamina: read maximum instead of current;
+# arrows: pass zero consumption. All options are off unless DM_CHEATS selects them.
+mac_cheat_patch	cd57b23fa4bbad65803d9788c01821ee	health	0xcc4e70	0xb90002b9	0xd503201f
+mac_cheat_patch	cd57b23fa4bbad65803d9788c01821ee	stamina	0xcc7444	0xbd40a400	0xbd40a800
+mac_cheat_patch	cd57b23fa4bbad65803d9788c01821ee	arrows	0xd93844	0x2a0203f6	0x52800016
+# durability: the source cheat writes 60000 at the equipped-item break check.
+# Reserve three zero words in text padding at +0x15a1d00, after the VFR veneer
+# (+0x15a1c70..+0x15a1cab) and before RO (+0x15a2000). Preserve cmp/branch flags.
+mac_cheat_patch	cd57b23fa4bbad65803d9788c01821ee	durability	0x7ac524	0xb9400008	0x1437d5f7
+mac_cheat_patch	cd57b23fa4bbad65803d9788c01821ee	durability	0x15a1d00	0x00000000	0x529d4c08
+mac_cheat_patch	cd57b23fa4bbad65803d9788c01821ee	durability	0x15a1d04	0x00000000	0xb9000008
+mac_cheat_patch	cd57b23fa4bbad65803d9788c01821ee	durability	0x15a1d08	0x00000000	0x17c82a08
+
 # Mac GPU uniform snapshots preserve draw values while avoiding pass splits.
 mac_uniform_batch	on
 

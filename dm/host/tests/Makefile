@@ -14,6 +14,7 @@ run: $(B)/t_touch $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $
 	$(B)/t_motion_dsu
 	$(B)/t_resolution_mac
 	$(B)/t_timing_mac
+	$(B)/t_cheats_mac
 	$(B)/t_oe 2>/dev/null
 	$(B)/t_fs 2>/dev/null
 	TMPDIR="$(abspath $(B))" $(B)/t_fs_commit_list
@@ -72,6 +73,15 @@ $(B)/t_vorbis_divides: t_vorbis.c ../../third_party/stb_vorbis/stb_vorbis.c | $(
 $(B):
 	mkdir -p $@
 .PHONY: run tsan
+run: $(B)/t_cheats_mac
+
+$(B)/t_cheats_mac: t_cheats_mac.c ../cheats_mac.c ../cheats_mac.h ../dm.h $(GAME_H) | $(B)
+	clang -O1 -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_cheats_mac.c
+
+run-cheats: $(B)/t_cheats_mac
+	$(B)/t_cheats_mac
+
+.PHONY: run-cheats
 tsan: $(B)/t_audio_spsc_tsan
 	$(B)/t_audio_spsc_tsan
 

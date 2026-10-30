@@ -130,6 +130,8 @@ Breath of the Wild 1.9.0 Mac builds support `DM_GAME_RES=1920x1080` for true 108
 
 On Mac, Breath of the Wild 1.9.0 also accepts experimental `DM_FPS=90` or `DM_FPS=120` in `env.txt`, followed by a restart. These opt-in modes adapt the game time step to elapsed time and preserve explicit game timing overrides. The default remains 60; the selected value is a ceiling, and actual frame rate depends on the scene, GPU and display. Resolution and effects stay unchanged.
 
+Optional BotW 1.9.0 Mac cheats: put `DM_CHEATS=health,stamina,durability,arrows` in your user `env.txt` and restart. Select only the comma-separated options you want: prevent heart loss, use maximum stamina, refill equipped-item durability to 60000, and prevent arrow consumption. All are off by default; remove the line or use `DM_CHEATS=none` to disable them on restart. Durability changes can be saved with your game; back up the save before using them. The supplied 1.8.2 cheat file cannot be loaded directly. See [cheat details](docs/development.md#botw-mac-cheats).
+
 ## Play
 
 **Settings.** A screen before the game starts offers what the game supports: frame rate, render scale, docked or handheld mode, game language, the frame-rate counter and Apple's performance HUD. Tap **Play** to start; the app remembers your choices.
@@ -294,6 +296,8 @@ Mac 手机体感：在用户 `env.txt` 中设置 `DM_MOTION_SOURCE=phone` 后重
 旷野之息 1.9.0 的 Mac 构建支持 `DM_GAME_RES=1920x1080`，将场景、HUD 和输出一起提高到真正的 1080p；`DM_GAME_RES=1280x720` 则使用 720p。在用户 `env.txt` 中设置后重启生效。更高分辨率会增加 GPU 耗时，可按清晰度和帧率选择。
 
 旷野之息 1.9.0 的 Mac 构建还可在 `env.txt` 中设置 `DM_FPS=90` 或 `DM_FPS=120`，重启后生效。这两个实验性模式按实际经过的时间调整游戏步长，同时保留游戏主动指定的时序。默认仍为 60；设置值是帧率上限，实际帧率取决于场景、GPU 和显示器，分辨率与特效保持不变。
+
+旷野之息 1.9.0 的 Mac 构建可选用金手指：在用户 `env.txt` 中加入 `DM_CHEATS=health,stamina,durability,arrows` 后重启。按需保留用逗号分隔的选项，分别为红心不减、使用最大体力、将被检查装备的耐久补到 60000、箭矢不消耗。默认全部关闭；删除此行或设置 `DM_CHEATS=none`，重启即可关闭。耐久修改可能随游戏存档保留，使用前请备份存档。提供的 1.8.2 金手指文件不能直接加载。详见[金手指说明](docs/development.md#botw-mac-cheats)。
 
 ## 游玩
 

@@ -187,6 +187,7 @@ or shell quotes. The settings below remain supported:
 | `DM_GAME_RES` | BotW 1.9.0 Mac: `1280x720` or `1920x1080`, including the scene, HUD and output. Unset retains native mode-dependent sizes. The local 1080p app bundles `1920x1080`; a user setting overrides it. D2R retains its existing KRES size parameters |
 | `DM_RUMBLE_GAIN` | Mac controller output multiplier, any finite nonnegative value, default `1`. `3` strengthens weak effects; `20` brings weaker waveform segments up to full API intensity; `0` mutes. Output remains in the system's 0–1 range. Applies after the Xbox response; restart after changing |
 | `DM_MOTION_SOURCE` | Mac gyro source: unset, empty or `controller` uses the current 1P controller; `phone` enables the phone connection menu and saved DSU connection. Restart after changing. Sources never fall back to each other |
+| `DM_CHEATS` | BotW 1.9.0 Mac only: comma-separated `health`, `stamina`, `durability`, `arrows`; unset, empty or `none` disables all. Restart after changing. Durability refills can persist in saves |
 
 `DM_GAME` (tools) and `GAME` (Make) select the profile at build time. A packaged
 app already contains its profile; these do not switch games at launch.
@@ -200,6 +201,44 @@ experiment controls were removed in v3.2; delete their old `env.txt` entries:
 | `DM_NVN_UNIFORM_BATCH`, `DM_NVN_UNIFORM_COPY_SERIAL` | BotW's Mac profile enables batching with independent snapshots; the serial snapshot branch is removed |
 | `DM_NVN_RENDER_STATE_CACHE`, `DM_NVN_POOL_CACHE`, `DM_NVN_BINDING_CACHE` | The three Mac caches are automatic |
 | `DM_HID_TRACE`, `DM_PROBE_EVERY` | Temporary input tracing and probe throttling are removed; the upstream probe tool remains available |
+
+### BotW Mac cheats
+
+To use unlimited stamina and arrows, add this to the Mac user's `env.txt` and restart:
+
+```ini
+DM_CHEATS=stamina,arrows
+```
+
+Each option can be selected independently. `health` skips the current-heart write;
+it does not prevent all scripted deaths or environmental resets. `stamina` reads
+maximum instead of current stamina. `arrows` passes zero to the arrow-consumption
+path; you still need a bow and arrows. `durability` reproduces the supplied cheat's
+equipped-item check: it writes 60000 to the checked item's durability. That value
+may be saved, so copy `save/` before enabling it. Disabling a cheat stops its code
+patch on the next launch; it does not undo values already written to a save.
+Remove the line or set `DM_CHEATS=none` to turn all options off.
+
+The user-supplied Atmosphere table targets BotW 1.8.2, build `DE0B6AC4EFC1DDA7`.
+Its addresses do not apply to 1.9.0. The Mac profile has separate, disassembled
+sites for `cd57b23fa4bbad65803d9788c01821ee` in `mac_cheat_patch` rows of `game.tsv`.
+`cheats_mac.c` checks the build and every selected original instruction before
+changing the private loader image, then the loader seals its executable pages.
+Unknown options, mismatched builds/instructions or occupied veneer padding abort
+loading before any cheat is applied. There is no runtime polling or text mutation.
+Timing, rendering and source files remain unchanged when a cheat is selected.
+
+The durability veneer uses three zero words at `main+0x15a1d00`, after the real-time
+VFR veneer and before RO data. It returns to the original comparison with w8 set
+and x0/flags otherwise preserved. Money, moon jump, item multipliers and movement
+speed from the old table are not implemented; no Atmosphere interpreter is included.
+Moon jump means holding a button to force vertical movement while airborne.
+
+Run `make -C dm/host/tests GAME=01007EF00011E000 run-cheats` for the patch contract.
+For actual-game instruction behavior and VFR coexistence, build `t_timing_mac`,
+then run `dm/host/tests/test_botw_cheats.py <original main NSO> <game work folder>`
+in the game tools' lz4/Unicorn environment. The original NSO and generated images
+stay outside this repository.
 
 ### BotW Mac resolution presets
 

@@ -11,6 +11,7 @@
 #include "hle.h"
 #if TARGET_OS_OSX
 #include "resolution_mac.h"
+#include "cheats_mac.h"
 #include "timing_mac.h"
 #endif
 
@@ -418,6 +419,7 @@ static void map_image(module_t *m, const char *dir) {
     if (dm_resolution_mac_patch(m, raw, sz) < 0) die("Invalid Mac game resolution request");
     int timing_extra = dm_timing_mac_prepare(m, raw, sz);
     if (timing_extra < 0) die("Invalid high-refresh timing request");
+    if (dm_cheats_mac_patch(m, raw, sz) < 0) die("Invalid Mac cheat request");
     if (m->patch_off < 0) {
         // Patch area before the base: file = the first part of the image (text + ro + data) + patch area; bss and the key page are anonymous zero pages. The gap from the patch area's end to the base is left inaccessible (PROT_NONE)
         uint64_t pre = (uint64_t)-m->patch_off, fl = m->file_image_len;

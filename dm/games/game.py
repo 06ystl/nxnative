@@ -144,6 +144,19 @@ def header(g):
         seen.add((build, offset))
         resolution_rows.append('{' + q(build) + f', {offset:#x}, {original:#x}, {hd:#x}, {full_hd:#x}' + '}')
     resolution_rows = ', '.join(resolution_rows) or '{0}'
+    cheat_rows, cheat_sites = [], set()
+    for row in g.values('mac_cheat_patch'):
+        if len(row) != 5 or row[0] not in known_builds:
+            raise ValueError(f'{g.id}: mac_cheat_patch requires a known main build, name, offset, original and replacement word')
+        build, name, *numbers = row
+        offset, original, replacement = (int(v, 0) for v in numbers)
+        if not re.fullmatch(r'[a-z][a-z0-9_]*', name) or offset < 0 or offset % 4 or any(w < 0 or w > 0xffffffff for w in (original, replacement)):
+            raise ValueError(f'{g.id}: invalid mac_cheat_patch name, offset or instruction')
+        if (build, offset) in cheat_sites:
+            raise ValueError(f'{g.id}: duplicate mac_cheat_patch site for {build} at {offset:#x}')
+        cheat_sites.add((build, offset))
+        cheat_rows.append('{' + q(build) + ', ' + q(name) + f', {offset:#x}, {original:#x}, {replacement:#x}' + '}')
+    cheat_rows = ', '.join(cheat_rows) or '{0}'
     frame_rows, frame_guards, frame_seen = [], [], set()
     for key, count, target in [('mac_frame_step', 6, frame_rows), ('mac_frame_guard', 3, frame_guards)]:
         for row in g.values(key):
@@ -200,6 +213,7 @@ def header(g):
          *([f'#define DM_GAME_NVN_API_MAJOR {api.split(".")[0]}', f'#define DM_GAME_NVN_API_MINOR {api.split(".")[1]}'] if g.get('device_api', '') else []),   # without the key: by the SDK version (hle_nvn.c nvn_api)
          f'#define DM_GAME_MAC_UNIFORM_BATCH {int(ub == "on")}',
          f'#define DM_GAME_MAC_RESOLUTION_PATCHES {resolution_rows}',
+         f'#define DM_GAME_MAC_CHEAT_PATCHES {cheat_rows}',
          f'#define DM_GAME_MAC_FRAME_STEP {frame_rows}',
          f'#define DM_GAME_MAC_FRAME_GUARDS {frame_guards}',
          '']
