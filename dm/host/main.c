@@ -134,6 +134,7 @@ int main(int argc, char **argv) {
 #ifdef DM_MAC_APP
     int dm_app_bootstrap(int *argc, char ***argv);
     if (!dm_app_bootstrap(&argc, &argv)) return 1;
+    front_hud_env(); // env.txt is now loaded; apply before preload creates the first Metal device.
 #endif
     { int mtl_pso_prebuild_tool(void); if (mtl_pso_prebuild_tool()) return 0; }   // DM_PSO_PREBUILD=tool: the pipeline archive's prebuild alone, no game (nvn_mtl.m)
     if (getenv("DM_PRELOAD")) dm_host_preload_start(argc, argv);   // Exercise the early-start path on Mac (on iOS it is called from the App's main())

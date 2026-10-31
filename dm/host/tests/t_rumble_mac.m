@@ -351,7 +351,28 @@ static void test_audio_ownership(void) {
     CHECK(!g_audio_haptics&&g_rumble_accepting&&!test_foot_active,"USB loss returns to ordinary game rumble");
     CHECK(test_audio_closed>0,"lost stream disposed");attach(nil);
 }
+extern float test_audio_gain;extern unsigned test_audio_frames;
+static void test_settings_controls(void) {
+    RumblePad *p=pad(1);attach(p);dm_rumble_mac_set_active(1);
+    dm_rumble_mac_set_levels(3,25,1.5f);dm_feedback_mac_status status=dm_rumble_mac_get_status();
+    CHECK(status.rumble==3&&status.audio==25&&status.trigger==1.5f&&test_audio_gain==25,"live multipliers reach the serial feedback owner and audio gain");
+    dm_rumble_mac_set_levels(NAN,4,1);CHECK(dm_rumble_mac_get_status().rumble==3,"invalid UI gains cannot overwrite working feedback");
+    send_value(0,.1,0,160,320);uint64_t time=clock_gettime_nsec_np(CLOCK_MONOTONIC);tick(time);
+    CHECK(fabsf(p.haptics.engines.lastObject.players.lastObject.intensity-.3f)<1e-6,"new rumble strength applies to an active game waveform");
+    CHECK(dm_rumble_mac_preview(),"user preview starts with the selected controller");
+    time=g_preview_start;tick(time+10000000);CHECK(dm_rumble_mac_get_status().previewing,"short preview runs through the normal feedback timer");
+    tick(time+360000000);CHECK(!dm_rumble_mac_get_status().previewing,"preview expires without replacing the game's requested waveform");
+    rumble_sync(^{g_audio_haptics=1;test_audio_ready=1;rumble_accept();});
+    NSUInteger engines=p.haptics.engines.count;unsigned frames=test_audio_frames;
+    CHECK(dm_rumble_mac_preview()&&!test_foot_active,"USB preview temporarily releases the game PCM producer");
+    dm_rumble_mac_set_active(1);CHECK(!test_foot_active,"focus refresh cannot mix game PCM into a preview");
+    time=g_preview_start;tick(time+10000000);
+    CHECK(test_audio_frames==frames+480&&p.haptics.engines.count==engines,"USB preview feeds PCM without touching native rumble engines");
+    tick(time+360000000);CHECK(test_foot_active&&!dm_rumble_mac_get_status().previewing,"USB preview restores ordinary game audio capture");
+    dm_rumble_mac_preview();dm_rumble_mac_set_active(0);CHECK(!dm_rumble_mac_get_status().previewing&&!test_audio_active,"window suspension immediately cancels a preview");
+    attach(nil);dm_rumble_mac_set_levels(1,.3f,1);dm_rumble_mac_set_active(1);
+}
 int main(void) { @autoreleasepool {
-    test_gain_config();test_audio_gain_config();test_hid();test_concurrent_publication();test_split();test_xbox_response();test_output_gain();test_audio_retry();test_audio_ownership();test_shared_and_errors();
+    test_gain_config();test_audio_gain_config();test_hid();test_concurrent_publication();test_split();test_xbox_response();test_output_gain();test_audio_retry();test_audio_ownership();test_settings_controls();test_shared_and_errors();
     printf("RUMBLE_MAC checks=%d failed=%d\n",checks,failed);return failed!=0;
 } }

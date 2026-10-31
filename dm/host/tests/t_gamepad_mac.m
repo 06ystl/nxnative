@@ -20,6 +20,7 @@ static NSArray *test_controllers(id cls, SEL sel) { (void)cls; (void)sel; return
 @interface TestMacWindow : NSObject
 @property (getter=isKeyWindow) BOOL keyWindow;
 @property (getter=isMiniaturized) BOOL miniaturized;
+@property (getter=isVisible) BOOL visible;
 @property NSWindowOcclusionState occlusionState;
 @property (weak) id<NSWindowDelegate> delegate;
 @end
@@ -32,11 +33,13 @@ void hle_bind_system_event(void *event, int autoclear) { (void)event; (void)auto
 void hle_signal_system_event(void *event) { (void)event; }
 
 static int checks, fails;
-static int keyboard_enabled;
+static int keyboard_enabled,controller_enabled;
+static TestMacApp *test_app;
 static void discovered(void *context) { (*(int *)context)++; }
 static void input_changed(int keyboard, int controller) {
-    keyboard_enabled = keyboard;
-    dm_gamepad_mac_set_active(controller);
+    keyboard_enabled = keyboard;controller_enabled=controller;
+    dm_rumble_mac_set_active(controller);
+    dm_gamepad_mac_set_gameplay_active(controller && !(test_app.active && g_settings_window.keyWindow));
 }
 #define CHECK(c, message) do { checks++; if (!(c)) { fails++; fprintf(stderr, "FAIL: %s (line %d)\n", message, __LINE__); } } while (0)
 static NpadState sample(void) { NpadState s; uint32_t id = 0; h_hid_StateFullKey(&s, &id); return s; }
@@ -139,7 +142,7 @@ int main(void) {
         pad_select(@[]); sample();
 
         connected = @[first];
-        TestMacApp *app = [TestMacApp new]; app.active = YES;
+        TestMacApp *app = [TestMacApp new]; test_app=app;app.active = YES;
         TestMacWindow *window = [TestMacWindow new]; window.keyWindow = YES;
         window.occlusionState = NSWindowOcclusionStateVisible;
         id watch = dm_mac_input_watch((NSApplication *)app, (NSWindow *)window, input_changed);
@@ -170,6 +173,20 @@ int main(void) {
         CHECK(buttons() == 0 && !keyboard_enabled, "app-owned dialog or activation before key restoration stays neutral");
         window.keyWindow = YES; settle();
         CHECK(buttons() == DM_BTN_A && keyboard_enabled, "queued refresh observes AppKit's final key-window state");
+
+        TestMacWindow *panel=[TestMacWindow new];panel.keyWindow=YES;window.visible=YES;window.keyWindow=NO;app.active=YES;
+        dm_mac_input_settings_window((NSWindow *)panel);notify(NSWindowDidResignKeyNotification,window);
+        CHECK(!buttons()&&!keyboard_enabled&&controller_enabled,"settings focus pauses gameplay but retains feedback eligibility");
+        window.occlusionState=0;notify(NSWindowDidChangeOcclusionStateNotification,window);
+        CHECK(!buttons()&&controller_enabled,"a settings panel covering the game still permits calibration and previews");
+        app.active=NO;window.occlusionState=NSWindowOcclusionStateVisible;notify(NSApplicationDidResignActiveNotification,app);
+        CHECK(buttons()==DM_BTN_A&&controller_enabled,"a visible background game resumes controller input when the settings app loses focus");
+        app.active=YES;
+        window.miniaturized=YES;notify(NSWindowDidMiniaturizeNotification,window);
+        CHECK(!controller_enabled,"settings cannot override a minimized game");
+        window.miniaturized=NO;window.occlusionState=NSWindowOcclusionStateVisible;panel.keyWindow=NO;
+        dm_mac_input_settings_window(nil);window.keyWindow=YES;notify(NSWindowDidBecomeKeyNotification,window);
+        CHECK(buttons()==DM_BTN_A&&keyboard_enabled,"closing settings restores the current held controller state");
 
         app.active = NO; window.keyWindow = NO;
         notify(NSApplicationDidResignActiveNotification, app);

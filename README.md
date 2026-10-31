@@ -73,6 +73,8 @@ This produces `SMBWMobile.app` beside the NSPs. Double-click it to play; the app
 
 Mac apps use an optimized Release host (`-O2`) by default. The same setting applies to `--target macos` and `--target both` in the unified script.
 
+Open **Settings…** in the Mac app menu (⌘,) to tune controller rumble, USB audio haptics and adaptive-trigger strength while playing. The Motion tab switches between controller and phone input, shows calibration status, and adjusts horizontal/vertical sensitivity and inversion. Changes save automatically; resolution, frame-rate target and the Metal FPS HUD take effect after restarting. Controller buttons and sticks are held neutral while the panel has focus, while calibration and explicit vibration previews remain available.
+
 Mac input: WASD = left stick, arrows = D-pad, J/K/U/I = A/B/X/Y, Q/E = L/R, Z/C = ZL/ZR, Return/Tab = +/−, F/G = stick presses. Click or drag for touchscreen input. ⌘Q quits; ⌃⌘F toggles full screen.
 
 Physical controllers: pair over Bluetooth or plug in over USB, then keep the game window visible. On multiple displays, a controller continues working while a browser or another app has focus; keyboard and mouse input still require focus in the game. macOS must recognize an extended gamepad (for example Xbox, PlayStation or Switch Pro). The first supported controller controls player 1; connecting or reconnecting while the app runs is supported. Nintendo and Xbox face buttons follow their printed letters; PlayStation uses × = A, ○ = B, □ = X, △ = Y. Both sticks, D-pad, shoulders, triggers, stick clicks and menu/options buttons are mapped. Keyboard input works alongside the controller. Switching apps releases held keyboard/mouse input while retaining controller input in a visible game window. Hiding, minimizing or fully covering the game, leaving its Space, display sleep and inactive user sessions stop controller input, phone motion and rumble. Making the window available again resamples the controller, and full-screen/display changes rebind it as needed. Rebuild older apps with `--target macos` to include these fixes. The input path and focus recovery have regression coverage using Apple's software controller snapshots; physical Xbox right-stick input and camera-sensitivity changes have also been verified in Breath of the Wild.
@@ -392,6 +394,8 @@ python3 scripts/build_mac_app_from_nsp.py /Volumes/Games/MarioWonder -k /Volumes
 脚本会在 NSP 旁生成 `SMBWMobile.app`，双击即可启动；包内包含游戏文件、macOS 着色器和图标，并使用本地临时签名，无需开发者账号。在 Spyder 中填写新脚本顶部的 `NSP_DIR`、`PROD_KEYS` 后按 F5；`OUT_APP` 可以更改输出路径。游戏文件和构建产物请放在存放游戏的磁盘上。
 
 Mac App 默认使用优化的 Release 宿主（`-O2`）。统一脚本的 `--target macos` 和 `--target both` 也使用这一设置。
+
+在 Mac 应用菜单选择**设置…**（⌘,），可在游玩时调整普通震动、USB 音频触觉和自适应扳机阻力。“体感”页可切换手柄／手机来源、查看校准状态，并调整水平／垂直灵敏度与反转。更改自动保存；分辨率、帧率目标和 Metal FPS 显示在重启游戏后生效。面板获得焦点时，手柄按键与摇杆暂停传给游戏，仍可校准和主动预览震动。
 
 Mac 键位：WASD = 左摇杆，方向键 = 十字键，J/K/U/I = A/B/X/Y，Q/E = L/R，Z/C = ZL/ZR，Return/Tab = +/−，F/G = 按下左右摇杆。鼠标单击或拖动模拟触屏。⌘Q 退出，⌃⌘F 切换全屏。
 

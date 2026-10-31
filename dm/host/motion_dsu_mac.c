@@ -28,6 +28,7 @@ struct dm_dsu_client {
     char host[256];
     uint64_t received_ns, sampling;
     motion_filter filter;
+    double response_h,response_v;
     dm_dsu_status status;
 };
 
@@ -138,7 +139,7 @@ static void *network_main(void *arg) {
                 if (c->enabled && generation==c->generation) {
                     now=motion_now();
                     if (c->received_ns && now-c->received_ns>DSU_TIMEOUT_NS) reset_filter(&c->filter);
-                    if (filter_packet(&c->filter,&packet)) {
+                    if (filter_packet_response(&c->filter,&packet,c->response_h,c->response_v)) {
                         c->received_ns=now;
                         if (c->filter.ready) c->filter.state.sampling=++c->sampling;
                         status_set(c,c->filter.ready?DM_DSU_READY:DM_DSU_CALIBRATING,
@@ -161,7 +162,7 @@ static void *network_main(void *arg) {
 dm_dsu_client *dm_dsu_create(void) {
     dm_dsu_client *c=calloc(1,sizeof *c); if (!c) return NULL;
     pthread_mutex_init(&c->lock,NULL); pthread_cond_init(&c->wake,NULL); reset_filter(&c->filter);
-    c->active=1;
+    c->active=1; c->response_h=c->response_v=1;
     if (pthread_create(&c->thread,NULL,network_main,c)) {
         pthread_cond_destroy(&c->wake); pthread_mutex_destroy(&c->lock); free(c); return NULL;
     }
@@ -199,4 +200,9 @@ int dm_dsu_read(dm_dsu_client *c, dm_sixaxis_state *state, int fusion) {
 }
 dm_dsu_status dm_dsu_get_status(dm_dsu_client *c) {
     pthread_mutex_lock(&c->lock); dm_dsu_status status=c->status; pthread_mutex_unlock(&c->lock); return status;
+}
+
+void dm_dsu_set_response(dm_dsu_client *c, double horizontal, double vertical) {
+    if (!c || !isfinite(horizontal) || !isfinite(vertical)) return;
+    pthread_mutex_lock(&c->lock);c->response_h=horizontal;c->response_v=vertical;pthread_mutex_unlock(&c->lock);
 }

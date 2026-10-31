@@ -603,6 +603,50 @@ For isolated diagnostics, `DM_APP_SUPPORT` and `DM_APP_LOG_DIR` override the sup
 
 Bundle IDs default to `org.nxnative.<lowercase-title-id>`. Keeping the bundle ID keeps the save location across rebuilds and renames. The app has Quit (⌘Q) and Full Screen (⌃⌘F) menu actions. Keyboard, mouse touch and physical controllers work in the native window. Quit and closing the window use the existing host shutdown routine; this stops host work but does not request an in-game save, so save in the game before quitting. The command-line `dmhost` keeps its existing launch contract and defaults.
 
+### Mac quick settings
+
+Open **Settings…** in the app menu (Command-comma) to adjust the controller while
+the game runs. Rumble, audio-haptic and trigger multipliers apply immediately.
+The short vibration preview uses the selected output: USB PCM when audio haptics
+owns the DualSense, otherwise ordinary controller rumble. It never starts native
+rumble alongside USB audio. Closing the panel, losing window eligibility or
+disconnecting stops the preview and restores the game source.
+
+The Motion tab selects controller or phone input without a restart. It reports
+sensor availability/calibration, connects the existing MotionSource service and
+provides calibration and signed horizontal/vertical response. Calibration still
+learns raw sensor bias; sensitivity applies afterward to the gyro rates and their
+integrated directions. Vertical response scales X; horizontal response scales Y/Z
+in the existing Switch axes. Defaults of 1 preserve the previous motion path.
+The game's own motion-aiming option must also be enabled.
+
+Resolution, FPS target and Metal HUD changes are saved for the next launch.
+Resolution presets require a verified build; 90/120 targets require the existing
+Mac frame-step adapter. Changing these controls does not alter the running image
+or its timing. Bootstrap applies the loaded HUD environment before preload
+creates the first Metal device. The panel never changes a display mode itself.
+
+`settings_mac.m` owns AppKit and `settings_store_mac.m` atomically updates only
+changed keys in the user's `env.txt`, preserving comments and unrelated entries.
+Existing environment-variable precedence remains unchanged at launch. Trigger
+strength and axis response/inversion are per-bundle `NSUserDefaults` preferences
+under `MacControllerResponse`; they introduce no new environment variables.
+Opening the panel writes no configuration. Save errors remain visible in the
+panel. `DM_APP_SUPPORT` selects the same diagnostic support directory as bootstrap.
+
+Feedback changes are serialized by `rumble_mac.m`; the audio callback reads its
+existing atomic gain. Motion response updates use each source's snapshot lock.
+The atomically published HID provider permits live source changes; a previously
+created phone client remains alive for pending reads and is inactive in controller
+mode. The settings window retains feedback/sensor eligibility while suppressing
+gameplay buttons and sticks, including latched presses. Ordinary app dialogs,
+minimization, hidden sessions and display sleep retain their existing exclusion.
+
+`make -C dm/host/tests GAME=01007EF00011E000 run-mac-settings` exercises the real
+panel and env-file persistence with synthetic endpoints. The Mac input, motion,
+rumble and trigger suites also cover live changes, preview expiry/output ownership
+and settings focus. No physical effects are sent by these tests.
+
 ### Mac environment variables
 
 For normal play, set only the language and operation mode you want in
@@ -740,6 +784,7 @@ runners into `run` without executing a test twice.
 
 | Feature | Implementation | Focused validation (`make -C dm/host/tests GAME=<id> …`) |
 |---|---|---|
+| Quick settings and persistence | `settings_mac.m`, `settings_store_mac.m` | `run-mac-settings` |
 | Window eligibility and controller input | `front_mac.m`, `input_focus_mac.m`, `gamepad_mac.m` | `run-mac-input` |
 | Controller/phone motion | `motion_mac.m`, `motion_controller_mac.m`, `motion_dsu_mac.c`, shared `motion_filter_mac.h` | `run-mac-input` |
 | Ordinary grip rumble | `rumble_mac.m`, with SDK vibration ABI in `hle_hid.c` | `run-mac-input` |

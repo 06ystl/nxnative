@@ -2,6 +2,7 @@
 // A0 B1 X2 Y3 StickL4 StickR5 L6 R7 ZL8 ZR9 Plus10 Minus11 Left12 Up13 Right14 Down15; sticks ±32767.
 #pragma once
 #include <stdint.h>
+#include <stdatomic.h>
 // Button bits (= nn::hid::NpadButton bit order; the DM_KEYS key-name table in hle_hid.c is generated from here). Frontends always compose buttons from these names.
 enum {
     DM_BTN_A = 1u << 0, DM_BTN_B = 1u << 1, DM_BTN_X = 1u << 2, DM_BTN_Y = 1u << 3,
@@ -25,6 +26,7 @@ uint64_t dm_cheats_keys(void);
 // dm_pad_players has its bit set; a player whose npad the game does not support (SetSupportedNpadIdType) feeds player 1 instead, so a one-player game sees every controller
 #define DM_PLAYERS 8   // npads No1..No8; player 1 is the Handheld npad in handheld mode (DM_OPMODE=0)
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);
+void dm_pad_clear(void); // clear held and pending physical input when its window is ineligible
 void dm_pad_set_player(int player, uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);   // player 0..DM_PLAYERS-1 (player 1..8)
 void dm_pad_players(uint32_t mask);   // bit p: player p + 1 has a controller; player 1 always counts as connected (the keyboard, the touch gamepad, DM_KEYS)
 // Live controller motion (hle_hid.c, motion_fusion.h): player 0..DM_PLAYERS-1's gyro and accelerometer as GameController reports them, acceleration in G (gravity direction,
@@ -53,7 +55,8 @@ typedef struct {
 _Static_assert(sizeof(dm_sixaxis_state) == 0x60, "SixAxisSensorState ABI");
 // Optional frontend motion source, independent of buttons/sticks. Returns 0
 // when unavailable/stale; read-only snapshots never integrate the same sample twice.
-extern int (*dm_motion_read)(dm_sixaxis_state *state, int fusion);
+typedef int (*dm_motion_read_fn)(dm_sixaxis_state *state, int fusion);
+extern _Atomic(dm_motion_read_fn) dm_motion_read;
 
 // nn::hid::VibrationValue ABI: low/high amplitude (0..1) and frequency (Hz).
 // A frontend installs these before guest startup. Without a sink the original

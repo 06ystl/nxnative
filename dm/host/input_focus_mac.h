@@ -4,3 +4,4 @@
 #pragma once
 #import <Cocoa/Cocoa.h>
 id dm_mac_input_watch(NSApplication *app, NSWindow *window, void (*changed)(int keyboard, int controller));
+void dm_mac_input_settings_window(NSWindow *window);

@@ -58,6 +58,7 @@ void dm_pad_set_player(int p, uint64_t buttons, int32_t lx, int32_t ly, int32_t 
     if (!p) shake_note();
 }
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) { dm_pad_set_player(0, buttons, lx, ly, rx, ry); }
+void dm_pad_clear(void) { dm_pad_set(0,0,0,0,0); atomic_store(&g_pad_latch[0],0); }
 static void script_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry) {
     uint64_t old = atomic_exchange(&g_sc_btn, buttons); atomic_fetch_or(&g_sc_latch, buttons & ~old); atomic_store(&g_sc_axes, pack(lx, ly, rx, ry));
     shake_note();
@@ -532,7 +533,7 @@ HLE_FORCE("_ZN2nn3hid21ShowControllerSupportEPNS0_27ControllerSupportResultInfoE
 // whatever count comes back (main+0x93fd84), takes the newest entry's acceleration for its swing detection (main+0x626244) and its angular velocity, angle and direction (main+0x5d72d4)
 typedef dm_sixaxis_state SixAxisState;
 _Static_assert(sizeof(SixAxisState) == 0x60, "SixAxisState");
-int (*dm_motion_read)(dm_sixaxis_state *state, int fusion);
+_Atomic(dm_motion_read_fn) dm_motion_read;
 static _Atomic unsigned g_six_started[2], g_six_fusion[2] = {1,1};
 static _Atomic int g_six_drift[2] = {1,1};
 static _Atomic float g_six_params[2][2] = {{.03f,.4f},{.03f,.4f}};
@@ -653,12 +654,13 @@ static int six_states(SixAxisState *out, int n, uint32_t h) {
     if (!six_connected(h)) { memset(out, 0, sizeof *out * (size_t)n); return 0; }
     int64_t samp = (int64_t)(guest_ns() / SIX_PERIOD_NS);
     int pl = player_of(h >> 8 & 0xff), shakes = pl == 0;
-    if (!pl && dm_motion_read) {
+    dm_motion_read_fn provider = atomic_load(&dm_motion_read);
+    if (!pl && provider) {
         memset(out,0,sizeof *out);
         int i=six_index(&h);
         if (i<0 || !atomic_load(&g_six_started[i])) return 0;
         if (shaking(guest_ns())) { for(int j=0;j<n;j++)six_sample(&out[j],samp-j,1); return n; }
-        return dm_motion_read(out,atomic_load(&g_six_fusion[i])) ? 1 : 0;
+        return provider(out,atomic_load(&g_six_fusion[i])) ? 1 : 0;
     }
     motion_state ms;
     if (motion_live(pl, &ms)) { for (int i = 0; i < n; i++) six_sample_live(&out[i], samp - i, &ms, shakes); return n; }
@@ -821,7 +823,8 @@ HLE_FORCE("_ZN2nn3hid17StopSixAxisSensorERKNS0_19SixAxisSensorHandleE", "six-axi
 HLE_FORCE("_ZN2nn3hid21GetSixAxisSensorStateEPNS0_18SixAxisSensorStateERKNS0_19SixAxisSensorHandleE", "six-axis sensor current state", void, h_hid_SixState, SixAxisState *s, const uint32_t *h) { six_states(s, 1, *h); }
 HLE_FORCE("_ZN2nn3hid21IsSixAxisSensorAtRestERKNS0_19SixAxisSensorHandleE", "six-axis sensor at rest: yes unless player 1's is shaking or a live controller is turning", unsigned, h_hid_SixRest, const uint32_t *h) {
     int pl = player_of(*h >> 8 & 0xff); motion_state ms;
-    if (!pl && dm_motion_read) {
+    dm_motion_read_fn provider = atomic_load(&dm_motion_read);
+    if (!pl && provider) {
         dm_sixaxis_state state;
         if (!six_states(&state,1,*h)) return 1;
         float rate2=0,accel2=0;

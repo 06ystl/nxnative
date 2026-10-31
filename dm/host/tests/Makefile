@@ -383,3 +383,10 @@ run: run-core run-mac-input run-cheats run-mac-bow run-audio-haptics
 
 $(B)/t_audio_haptics_dsp: t_audio_haptics_dsp.c audio_wave_fixture.h ../audio_haptics_dsp_mac.c ../audio_haptics_dsp_mac.h ../audio_sources_mac.h $(GAME_H) | $(B)
 	clang -O2 -Wall -Wextra -Werror $(GINC) -o $@ t_audio_haptics_dsp.c
+
+$(B)/t_settings_mac: t_settings_mac.m ../settings_mac.m ../settings_mac.h ../settings_store_mac.m ../settings_store_mac.h ../rumble_mac.h ../motion_mac.h ../front.h ../gamepad_mac.h ../input_focus_mac.h ../resolution_mac.h ../timing_mac.h $(GAME_H) | $(B)
+	clang -O1 -Wall -Werror -Wno-unused-function -fobjc-arc $(GINC) -I.. -o $@ t_settings_mac.m ../settings_store_mac.m -framework Cocoa -framework GameController
+run-mac-settings: $(B)/t_settings_mac
+	$(B)/t_settings_mac
+run: run-mac-settings
+.PHONY: run-mac-settings

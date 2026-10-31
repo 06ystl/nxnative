@@ -1,5 +1,8 @@
 #include "input_focus_mac.h"
 
+static __weak NSWindow *g_settings_window;
+void dm_mac_input_settings_window(NSWindow *window) { g_settings_window=window; }
+
 @interface DmMacInputFocus : NSObject <NSWindowDelegate>
 @property (weak) NSApplication *app;
 @property (weak) NSWindow *window;
@@ -17,13 +20,14 @@
 @implementation DmMacInputFocus
 - (void)refresh {
     NSWindow *window = self.window;
-    BOOL visible = (window.occlusionState & NSWindowOcclusionStateVisible) != 0;
+    BOOL visible = (window.occlusionState & NSWindowOcclusionStateVisible) != 0 ||
+                   (g_settings_window.keyWindow && self.app.active && window.visible);
     BOOL available = visible && !window.miniaturized && !self.app.hidden && !self.app.modalWindow && !self.transitioning &&
                      !self.sessionInactive && !self.displaysAsleep && !self.closed;
     BOOL keyboard = available && self.app.active && window.keyWindow;
     // A visible game on another display accepts its controller while a browser
     // is frontmost. An app-owned dialog still excludes gameplay behind it.
-    BOOL controller = available && (!self.app.active || window.keyWindow);
+    BOOL controller = available && (!self.app.active || window.keyWindow || g_settings_window.keyWindow);
     self.changed(keyboard, controller);
 }
 - (void)refreshAfterEvent {

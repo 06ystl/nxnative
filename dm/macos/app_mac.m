@@ -72,6 +72,7 @@ int dm_app_bootstrap(int *argc, char ***argv) {
         // Shell variables win, followed by the user's env.txt, then the baked-in file.
         env_file([support stringByAppendingPathComponent:@"env.txt"]);
         env_file([dm stringByAppendingPathComponent:@"env.txt"]);
+        env_default("DM_APP_SUPPORT", support);
         env_default("DM_ROOT", support);
         env_default("DM_SAVE", [support stringByAppendingPathComponent:@"save"]);
         env_default("DM_TEMP", [support stringByAppendingPathComponent:@"temp"]);

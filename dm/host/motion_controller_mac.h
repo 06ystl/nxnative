@@ -12,3 +12,4 @@ void dm_controller_motion_set_active(int active);
 void dm_controller_motion_calibrate(void);
 dm_controller_motion_status dm_controller_motion_get_status(void);
 int dm_controller_motion_read(dm_sixaxis_state *state, int fusion);
+void dm_controller_motion_set_response(double horizontal, double vertical);

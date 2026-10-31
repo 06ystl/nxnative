@@ -14,6 +14,7 @@
 #include "dm_input.h"
 #include "front.h"
 #include "gamepad_mac.h"
+#include "rumble_mac.h"
 #include "controller_ui_mac.h"
 #include "input_focus_mac.h"
 #include "motion_mac.h"
@@ -24,6 +25,7 @@
 #include "pad_slots.h"
 #include "haptics_apple.h"
 #include "motion_apple.h"
+#include "settings_mac.h"
 #include "motion_pro_mac.h"
 #include "pad_apple.h"
 #include <signal.h>
@@ -104,7 +106,8 @@ static void push(void) {
 static void input_active(int keyboard, int controller) {
     g_keyboard_active = keyboard;
     if (!keyboard) { g_btn = 0; g_w = g_a = g_s = g_d = 0; push(); g_mouse_down=0; dm_touch_set(NULL, 0); }
-    dm_gamepad_mac_set_active(controller);
+    dm_rumble_mac_set_active(controller);
+    dm_gamepad_mac_set_gameplay_active(controller && !dm_settings_mac_interacting());
     dm_motion_mac_set_active(controller);
     // The guest stays interactive while visible on another display. Sending an
     // OutOfFocus notification here could make it ignore otherwise valid input.
@@ -1110,6 +1113,7 @@ void front_run(void (*guest)(void)) {
         [nc addObserverForName:NSWindowDidDeminiaturizeNotification object:win queue:nil usingBlock:^(NSNotification *n) { (void)n; dm_gfx_suspend(0); dm_audio_suspend(0); dm_focus_set(2); }];
         dm_gamepad_mac_start();
         dm_motion_mac_start();
+        dm_settings_mac_start(win);
         static id inputFocus;
         inputFocus = dm_mac_input_watch(NSApp, win, input_active);
         // Guest thread: 64 MiB stack (the Switch main thread stack is specified by npdm; the host gives plenty)

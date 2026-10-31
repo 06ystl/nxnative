@@ -6,3 +6,5 @@ int dm_gamepad_mac_is_dualsense(void);
 // Once at startup, on the main thread: connected pads can arrive asynchronously
 // after the registry's first query. Completes on discovery or after one second.
 void dm_gamepad_mac_after_discovery(void (*ready)(void *), void *context);
+// Settings can suspend gameplay buttons without stopping calibration or preview output.
+void dm_gamepad_mac_set_gameplay_active(int active);

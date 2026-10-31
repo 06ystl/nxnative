@@ -47,3 +47,9 @@ int dm_resolution_mac_patch(const module_t *module, uint8_t *image, size_t lengt
     LOG("Mac render resolution: %s (%u verified sites, main build %s)", request, count, module->build_id);
     return 1;
 }
+
+int dm_resolution_mac_has_presets(const char *build) {
+    for(size_t i=0;i<sizeof patches/sizeof *patches;i++)
+        if(patches[i].build && !strcmp(patches[i].build,build))return 1;
+    return 0;
+}

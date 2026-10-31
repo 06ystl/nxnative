@@ -15,6 +15,7 @@ static pthread_mutex_t g_controller_motion_lock = PTHREAD_MUTEX_INITIALIZER;
 static motion_filter g_controller_filter;
 static uint64_t g_controller_received, g_controller_sampling;
 static uint32_t g_controller_sequence;
+static double g_response_h=1, g_response_v=1;
 
 static void controller_motion_clear(void) { // snapshot lock held
     reset_filter(&g_controller_filter); g_controller_received = 0;
@@ -33,7 +34,7 @@ static void controller_motion_sample(GCMotion *motion) { // controller's main ha
     for (int i=0;i<3;i++) if (!isfinite(packet.accel[i]) || !isfinite(packet.gyro[i])) return;
     pthread_mutex_lock(&g_controller_motion_lock);
     if (g_controller_received && now-g_controller_received > 500000000ull) controller_motion_clear();
-    if (filter_packet(&g_controller_filter,&packet)) {
+    if (filter_packet_response(&g_controller_filter,&packet,g_response_h,g_response_v)) {
         g_controller_received = now;
         if (g_controller_filter.ready) g_controller_filter.state.sampling = ++g_controller_sampling;
     }
@@ -112,4 +113,11 @@ int dm_controller_motion_read(dm_sixaxis_state *state, int fusion) {
         if (!fusion) memcpy(state->direction,g_controller_filter.raw_direction,sizeof state->direction);
     }
     pthread_mutex_unlock(&g_controller_motion_lock); return ok;
+}
+
+void dm_controller_motion_set_response(double horizontal, double vertical) {
+    if (!isfinite(horizontal) || !isfinite(vertical)) return;
+    pthread_mutex_lock(&g_controller_motion_lock);
+    g_response_h=horizontal; g_response_v=vertical;
+    pthread_mutex_unlock(&g_controller_motion_lock);
 }

@@ -58,6 +58,7 @@ static void rest(Sensor *s) {
 static int read_state(dm_sixaxis_state *state) { uint32_t h=six_handle(0);return h_hid_SixStates(state,1,&h); }
 
 int main(void) { @autoreleasepool {
+    [NSUserDefaults.standardUserDefaults setVolatileDomain:@{@"MotionSourceEnabled":@NO} forName:NSArgumentDomain];
     unsetenv("DM_KEYS");unsetenv("DM_MOTION_SOURCE");unsetenv("DM_RUMBLE_GAIN");
     CHECK(!motion_uses_phone(),"omitted source selects controller");
     setenv("DM_MOTION_SOURCE","",1);CHECK(!motion_uses_phone(),"empty source selects controller");
@@ -130,10 +131,19 @@ int main(void) { @autoreleasepool {
     CHECK(!other.motion.sensorsActive&&!read_state(&state)&&!g_phone_client,"a gyro-less pad does not fall back to a phone");
     other.motion.hasRotationRate=YES;pad_select(devices);rest(other.motion);CHECK(read_state(&state),"capable controller can recover after refresh");
     [menu refresh];CHECK(menu.calibrateItem.enabled&&[menu.statusItem.title isEqualToString:@"Controller motion connected"],"menu reports native readiness and enables native calibration");
+    dm_motion_mac_set_response(-2,.5);rest(other.motion);
+    other.motion.rotationRate=(GCRotationRate){M_PI/2,0,M_PI/2};emit(other.motion);read_state(&state);
+    CHECK(fabs(state.angular_velocity[0]-.125)<.00001&&fabs(state.angular_velocity[2]+.5)<.00001,"live axis response scales bias-corrected motion without recalibration");
+    CHECK(dm_controller_motion_get_status().can_calibrate,"changing sensitivity retains the active sensor");
+    dm_motion_mac_set_response(1,1);
     setenv("DM_MOTION_SOURCE","phone",1);motion_source_start();
     CHECK(dm_motion_read==read_phone&&g_phone_client&&!other.motion.sensorsActive&&!other.motion.valueChangedHandler,"explicit phone mode exclusively selects the DSU worker and stops native sensors");
     [menu refresh];CHECK(menu.connectItem.enabled&&!menu.calibrateItem.enabled&&[menu.statusItem.title isEqualToString:@"Phone motion off"],"phone mode enables its connection control with the correct status");
     CHECK(!read_state(&state),"an unconnected phone does not fall back to a native controller");
+    dm_dsu_client *retained=g_phone_client;
+    dm_motion_mac_select_phone(0);rest(other.motion);
+    CHECK(read_state(&state)&&g_phone_client==retained&&dm_dsu_get_status(retained).phase==DM_DSU_OFF,"controller mode disconnects network traffic while retaining a safe endpoint for pending game reads");
+    dm_motion_mac_select_phone(1);CHECK(g_phone_client==retained&&!read_state(&state),"switching sources reuses a stable client and never leaks controller data into phone mode");
     dm_dsu_destroy(g_phone_client);g_phone_client=NULL;unsetenv("DM_MOTION_SOURCE");motion_source_start();
     CHECK(dm_motion_read==dm_controller_motion_read&&!g_phone_client&&other.motion.sensorsActive,"removing the setting restores native controller mode");
     devices=@[];pad_select(devices);

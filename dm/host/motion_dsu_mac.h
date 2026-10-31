@@ -20,3 +20,4 @@ void dm_dsu_calibrate(dm_dsu_client *client);
 void dm_dsu_set_active(dm_dsu_client *client, int active);
 int dm_dsu_read(dm_dsu_client *client, dm_sixaxis_state *state, int fusion);
 dm_dsu_status dm_dsu_get_status(dm_dsu_client *client);
+void dm_dsu_set_response(dm_dsu_client *client, double horizontal, double vertical);

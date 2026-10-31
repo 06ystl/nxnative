@@ -55,7 +55,7 @@ static void reset_capture(motion_filter *f) {
     memset(f->sum, 0, sizeof f->sum); memset(f->sum2, 0, sizeof f->sum2);
     memset(f->gravity_sum, 0, sizeof f->gravity_sum);
 }
-static int filter_packet(motion_filter *f, const motion_packet *p) {
+static int filter_packet_response(motion_filter *f, const motion_packet *p, double horizontal, double vertical) {
     // Do not integrate repeated/reordered sensor samples or a repeated timestamp.
     if (f->has_packet && p->server == f->server &&
         ((int32_t)(p->sequence - f->sequence) <= 0 || p->timestamp <= f->timestamp)) return 0;
@@ -92,7 +92,7 @@ static int filter_packet(motion_filter *f, const motion_packet *p) {
     // with fresh data instead of extrapolating through a stalled connection.
     double dt = dt_us <= 250000 ? dt_us / 1e6 : 0;
     double rate[3], corrected[3];
-    for (int i=0;i<3;i++) rate[i]=corrected[i]=(p->gyro[i]-f->bias[i])*RAD_PER_DEG;
+    for (int i=0;i<3;i++) rate[i]=corrected[i]=(p->gyro[i]-f->bias[i])*RAD_PER_DEG*(i ? horizontal : vertical);
     if (norm > 0.9 && norm < 1.1) {
         float basis[3][3]; direction(f->q, basis);
         double pred[3]={-basis[0][2],-basis[1][2],-basis[2][2]};
@@ -105,10 +105,14 @@ static int filter_packet(motion_filter *f, const motion_packet *p) {
     integrate(f->q, corrected, dt); integrate(f->raw_q, rate, dt);
     for (int i=0;i<3;i++) {
         f->state.acceleration[i]=p->accel[i];
-        f->state.angular_velocity[i]=(p->gyro[i]-f->bias[i])/360.0;
+        f->state.angular_velocity[i]=rate[i]/(2*M_PI);
         f->state.angle[i]+=f->state.angular_velocity[i]*dt;
     }
     f->state.delta_time=(dt_us<=250000?dt_us:0)*1000; f->state.sampling++;
     f->state.attributes=1; direction(f->q,f->state.direction); direction(f->raw_q,f->raw_direction);
     return 1;
+}
+
+static int filter_packet(motion_filter *f, const motion_packet *p) {
+    return filter_packet_response(f,p,1,1);
 }

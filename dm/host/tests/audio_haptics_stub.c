@@ -10,8 +10,10 @@ int dm_haptic_usb_open(void){test_audio_open_count++;test_audio_ready=test_audio
 void dm_haptic_usb_close(void){test_audio_ready=0;test_audio_closed++;}
 void dm_haptic_usb_set_active(int on){test_audio_active=on;}
 int dm_haptic_usb_ready(void){return test_audio_ready;}
-void dm_haptic_usb_set_gain(float g){(void)g;}
-size_t dm_haptic_usb_enqueue(const float *p,size_t n){(void)p;return n;}
+float test_audio_gain;
+unsigned test_audio_frames;
+void dm_haptic_usb_set_gain(float g){test_audio_gain=g;}
+size_t dm_haptic_usb_enqueue(const float *p,size_t n){(void)p;test_audio_frames+=n;return n;}
 const char *dm_haptic_usb_status(void){return "test";}
 dm_haptic_usb_stats dm_haptic_usb_get_stats(void){return (dm_haptic_usb_stats){0};}
 void dm_haptic_usb_set_trigger(unsigned side,const dm_trigger_slope *effect){(void)side;(void)effect;}

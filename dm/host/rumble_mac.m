@@ -31,7 +31,9 @@ static id<CHHapticPatternPlayer> g_rumble_players[2];
 static CHHapticPattern *g_rumble_pattern;
 static uint64_t g_rumble_retry[2], g_rumble_started[2];
 static float g_rumble_intensity[2] = {-1,-1}, g_rumble_sharpness[2] = {-1,-1};
-static float g_rumble_gain = 1;
+static float g_rumble_gain = 1, g_audio_gain=.3f, g_feedback_trigger_gain=1;
+static uint64_t g_preview_start,g_preview_end;
+static unsigned g_preview_frame;
 static int g_audio_haptics;
 static uint64_t g_audio_retry;
 static void audio_submit(const float *pcm, unsigned frames) {
@@ -227,6 +229,28 @@ static int audio_candidate(void) {
 }
 static void rumble_accept_at(uint64_t now);
 static void rumble_accept(void) { rumble_accept_at(clock_gettime_nsec_np(CLOCK_MONOTONIC)); }
+static int preview_tick(uint64_t now) { // rumble queue; exactly the selected output, never native rumble beside USB audio
+    if (!g_preview_end) return 0;
+    if (!g_rumble_active || g_rumble_closed || now>=g_preview_end) {
+        g_preview_end=0;
+        if (g_audio_haptics) dm_audio_sources_set_active(g_rumble_active && !g_rumble_closed);
+        return 0;
+    }
+    if (g_audio_haptics && dm_haptic_usb_ready()) {
+        float pcm[480*2];
+        for (unsigned i=0;i<480;i++,g_preview_frame++) {
+            double t=g_preview_frame/48000.0;
+            double envelope=fmax(0,fmin(1,fmin(t/.02,(.35-t)/.03)));
+            pcm[i*2]=(float)(.04*envelope*sin(2*M_PI*85*t));
+            pcm[i*2+1]=(float)(.04*envelope*sin(2*M_PI*125*t));
+        }
+        dm_haptic_usb_enqueue(pcm,480);
+    } else if (g_rumble_haptics) {
+        dm_vibration_value v={.12f,160,.04f,320};
+        rumble_play(0,v,now);if(g_rumble_split)rumble_play(1,v,now);
+    }
+    return 1;
+}
 static void rumble_tick(uint64_t now) { // rumble queue
     dm_adaptive_trigger_tick(now);
     if (g_audio_haptics && !dm_haptic_usb_ready()) {
@@ -236,6 +260,7 @@ static void rumble_tick(uint64_t now) { // rumble queue
     }
     if (g_rumble_active && !g_rumble_closed && !g_audio_haptics && audio_candidate() && now >= g_audio_retry)
         rumble_accept_at(now);
+    if (preview_tick(now)) return;
     if (!g_rumble_active || g_rumble_closed || g_audio_haptics || !g_rumble_haptics) return;
     dm_vibration_value values[2];
     pthread_mutex_lock(&g_rumble_mu); memcpy(values,g_rumble_want,sizeof values); pthread_mutex_unlock(&g_rumble_mu);
@@ -256,7 +281,7 @@ static void rumble_accept_at(uint64_t now) { // rumble queue
         g_audio_retry = now + RUMBLE_RETRY_S * 1000000000ull;
     }
     dm_haptic_usb_set_active(eligible && g_audio_haptics);
-    dm_audio_sources_set_active(eligible && g_audio_haptics);
+    dm_audio_sources_set_active(eligible && g_audio_haptics && !g_preview_end);
     int on = eligible && !g_audio_haptics && g_rumble_haptics != nil;
     pthread_mutex_lock(&g_rumble_mu); g_rumble_accepting = on; if (!on) rumble_clear_want(); pthread_mutex_unlock(&g_rumble_mu);
     if (!on) for (unsigned s = 0; s < 2; s++) rumble_retire(s);
@@ -269,7 +294,7 @@ void dm_rumble_mac_start(void) {
     dispatch_once(&once, ^{
         g_rumble_gain = rumble_read_gain();
         dm_audio_sources_submit = audio_submit;
-        float gain = audio_read_gain();
+        float gain = g_audio_gain = audio_read_gain();
         dm_haptic_usb_set_gain(gain);
         if (dm_audio_sources_configured()) fprintf(stderr,"[dm] Audio haptics gain: %.2fx (DM_AUDIO_HAPTICS_GAIN; PCM full scale +/-1)\n",gain);
         g_rumble_queue = dispatch_queue_create("dm.controller.rumble", DISPATCH_QUEUE_SERIAL);
@@ -294,7 +319,7 @@ void dm_rumble_mac_attach(GCController *controller) {
     rumble_sync(^{
         dm_adaptive_trigger_attach(controller);
         if (g_rumble_controller == controller && g_rumble_haptics == haptics) { rumble_accept(); return; }
-        audio_close(); g_audio_retry = 0;
+        g_preview_end=0;audio_close(); g_audio_retry = 0;
         for (unsigned s = 0; s < 2; s++) { rumble_retire(s); g_rumble_retry[s] = 0; }
         dm_haptics_clear(0);
         pthread_mutex_lock(&g_rumble_mu); rumble_clear_want(); pthread_mutex_unlock(&g_rumble_mu);
@@ -308,15 +333,47 @@ void dm_rumble_mac_attach(GCController *controller) {
 }
 void dm_rumble_mac_set_active(int active) {
     dm_rumble_mac_start();
-    rumble_sync(^{ g_rumble_active = !!active; dm_adaptive_trigger_set_active(active); rumble_accept(); });
+    rumble_sync(^{ if (!active) g_preview_end=0; g_rumble_active = !!active; dm_adaptive_trigger_set_active(active); rumble_accept(); });
     dm_haptics_suspend(DM_HAPTICS_INACTIVE,!active);
 }
 void dm_rumble_mac_shutdown(void) {
     if (!g_rumble_queue) return;
     rumble_sync(^{
-        dm_adaptive_trigger_shutdown();
+        g_preview_end=0;dm_adaptive_trigger_shutdown();
         audio_close();
         g_rumble_closed = 1; rumble_accept();
         g_rumble_haptics = nil; g_rumble_controller = nil;
+    });
+}
+
+dm_feedback_mac_status dm_rumble_mac_get_status(void) {
+    dm_rumble_mac_start();__block dm_feedback_mac_status s;
+    rumble_sync(^{
+        s=(dm_feedback_mac_status){g_rumble_gain,g_audio_gain,g_feedback_trigger_gain,
+            g_rumble_controller!=nil,g_audio_haptics && dm_haptic_usb_ready(),dm_adaptive_trigger_available(),g_preview_end!=0,{0}};
+        snprintf(s.controller,sizeof s.controller,"%s",g_rumble_controller.vendorName.UTF8String ?: "");
+    });return s;
+}
+void dm_rumble_mac_set_levels(float rumble,float audio,float trigger) {
+    if (!isfinite(rumble)||rumble<0||!isfinite(audio)||audio<0||!isfinite(trigger)||trigger<0) return;
+    dm_rumble_mac_start();rumble_sync(^{
+        g_rumble_gain=rumble;g_audio_gain=audio;g_feedback_trigger_gain=trigger;
+        dm_haptic_usb_set_gain(audio);dm_adaptive_trigger_set_gain(trigger);
+    });
+}
+int dm_rumble_mac_preview(void) {
+    dm_rumble_mac_start();__block int ok=0;rumble_sync(^{
+        if (!g_rumble_active || g_rumble_closed || (!g_audio_haptics && !g_rumble_haptics)) return;
+        g_preview_start=clock_gettime_nsec_np(CLOCK_MONOTONIC);g_preview_end=g_preview_start+350000000ull;g_preview_frame=0;
+        if (g_audio_haptics) {dm_audio_sources_set_active(0);dm_haptic_usb_set_active(0);dm_haptic_usb_set_active(1);}
+        ok=1;
+    });return ok;
+}
+void dm_rumble_mac_stop_preview(void) {
+    if (!g_rumble_queue) return;
+    rumble_sync(^{
+        if (!g_preview_end) return;g_preview_end=0;
+        for(unsigned s=0;s<2;s++)rumble_stop_player(s);
+        if(g_audio_haptics){dm_haptic_usb_set_active(0);dm_haptic_usb_set_active(g_rumble_active && !g_rumble_closed);dm_audio_sources_set_active(g_rumble_active && !g_rumble_closed);}
     });
 }

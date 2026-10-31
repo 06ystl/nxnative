@@ -35,7 +35,7 @@ static void pad_axes(GCControllerDirectionPad *stick, int32_t *x, int32_t *y) {
 }
 
 static void pad_read(GCExtendedGamepad *g) {
-    if (!g_mac_input_active || !g) { dm_pad_set(0, 0, 0, 0, 0); return; }
+    if (!g_mac_input_active || !g) { dm_pad_clear(); return; }
     uint64_t buttons = 0;
 #define KEY(button, bit) if (button.isPressed) buttons |= bit
     // GameController already normalizes Nintendo face buttons by letter. Like
@@ -120,8 +120,12 @@ void dm_gamepad_mac_start(void) {
 
 void dm_gamepad_mac_set_active(int active) {
     if (g_mac_scripted) return;
-    g_mac_input_active = !!active;
     dm_rumble_mac_set_active(active);
+    dm_gamepad_mac_set_gameplay_active(active);
+}
+void dm_gamepad_mac_set_gameplay_active(int active) {
+    if (g_mac_scripted) return;
+    g_mac_input_active = !!active;
     if (g_mac_input_active) pad_select(GCController.controllers);
     else pad_read(nil);
 }

@@ -19,3 +19,4 @@ void dm_adaptive_trigger_shutdown(void);
 // Select the shared USB report owner while audio haptics owns the controller.
 // NULL restores native GameController trigger output.
 void dm_adaptive_trigger_set_usb_output(dm_trigger_output_fn output);
+void dm_adaptive_trigger_set_gain(float gain);

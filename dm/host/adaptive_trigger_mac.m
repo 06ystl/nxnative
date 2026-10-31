@@ -1,5 +1,6 @@
 #import <GameController/GameController.h>
 #include <math.h>
+#include <limits.h>
 #include <stdio.h>
 #include "adaptive_trigger_mac.h"
 
@@ -18,7 +19,12 @@ static uint64_t g_shot_seen, g_pull_player, g_pull_time, g_recoil_player, g_reco
 static int g_cancelled;
 static dm_trigger_output_fn g_usb_output;
 static int g_native_stale;
+static float g_trigger_gain=1;
 static void write_slope(unsigned side,dm_trigger_slope effect) {
+    if (effect.enabled) {
+        effect.low=fminf(1,effect.low*g_trigger_gain);effect.high=fminf(1,effect.high*g_trigger_gain);
+        if (!effect.low && !effect.high) effect.enabled=0;
+    }
     if(g_usb_output){g_usb_output(side,&effect);return;}
     if(g_native_stale){[g_left_trigger setModeOff];[g_right_trigger setModeOff];g_native_stale=0;}
     GCDualSenseAdaptiveTrigger *trigger=side?g_right_trigger:g_left_trigger;
@@ -164,3 +170,9 @@ void dm_adaptive_trigger_tick(uint64_t now) {
     g_sent = level;
 }
 void dm_adaptive_trigger_shutdown(void) { reset_pull(); g_closed = 1; g_active = 0; g_right_trigger = nil; g_left_trigger = nil; }
+
+void dm_adaptive_trigger_set_gain(float gain) {
+    if (!isfinite(gain) || gain<0 || gain==g_trigger_gain) return;
+    g_trigger_gain=gain;g_sent=g_left_sent=INT_MAX;g_sampled=0;
+    if (!gain) {write_slope(0,(dm_trigger_slope){0});write_slope(1,(dm_trigger_slope){0});}
+}
