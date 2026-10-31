@@ -599,8 +599,8 @@ The converter requires Pillow, oead, `zstd`, and `bsdtar` for RAR input; an
 extracted mod directory is also accepted. It reads the supplied game's compression
 dictionary, decodes the donor's vector font and BC7 artwork, and transfers selected
 glyphs and textures into BotW's own archives. Cross/circle/square/triangle correspond
-to A/B/X/Y in the Mac input adapter. BotW's language-font payloads and decompressed
-resource sizes are retained. Pass the resulting directory to `--controller-ui` when
+to A/B/X/Y in the Mac input adapter. BotW's language-font payloads and font
+allocations are retained. Pass the resulting directory to `--controller-ui` when
 packaging. Generated assets and dictionaries belong on the game drive, outside Git.
 The control diagram reuses BotW's guide-line, endpoint and button-cluster
 sprites, routed to the DualSense artwork's actual sticks, D-pad, face cluster,
@@ -614,6 +614,14 @@ Layout offsets, guide colour and cluster outline sizes are grouped at the top of
 An existing compatible App can use the generated patch without rebuilding:
 copy the complete output directory to `patches/dualsense-ui/` beside the App,
 connect the DualSense and restart. Keep `manifest.tsv` at that directory's root.
+Contextual four-button hints also follow the physical DualSense arrangement:
+cross below, circle right, square left and triangle above. Their highlighted
+button, inactive symbols and caption move together; square uses the game's
+left-facing caption frame. Input bindings and prompt animations are retained.
+Inactive symbols use BotW's existing External font, with the converted PS5 glyphs.
+The extra font references grow the layouts slightly; the converter increases only
+`Layout/Common.blarc`'s resource-size-table entry by the aligned archive growth,
+preserving its original overhead and all other allocation entries.
 
 ### Mac audio-event haptics
 

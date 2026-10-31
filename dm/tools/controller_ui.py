@@ -10,6 +10,7 @@ import math
 import struct
 import subprocess
 import tempfile
+import zlib
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps
@@ -21,6 +22,11 @@ CLUSTER_RING_SIZE = {'dpad': 72, 'face': 80}
 # Basic-page label offsets in the target layout's coordinate system.
 BASIC_GROUP_OFFSETS = {'N_CrossKey_00': 56, 'N_Minus_00': -6}
 BASIC_STICK_OFFSET = -106
+# Semantic buttons retain the Mac input mapping; only their HUD positions change.
+SWITCH_FACE_POSITIONS = {'A': (26, 0), 'B': (0, -26), 'X': (0, 26), 'Y': (-26, 0)}
+PS5_FACE_POSITIONS = {'A': (0, -26), 'B': (26, 0), 'X': (-26, 0), 'Y': (0, 26)}
+FACE_GLYPHS = {button: 0xe040+i for i, button in enumerate('ABXY')}
+RESOURCE_TABLE = 'System/Resource/ResourceSizeTable.product.srsizetable'
 
 
 def unpack(data):
@@ -373,6 +379,104 @@ def adapt_layout(original):
     return bytes(data)
 
 
+def action_prompt_font(original):
+    """Add the existing button-symbol font without changing the language font."""
+    at = struct.unpack_from('<H', original, 6)[0]
+    while at < len(original):
+        kind, size = original[at:at+4], struct.unpack_from('<I', original, at+4)[0]
+        if kind == b'fnl1':
+            section = original[at:at+size]
+            count = struct.unpack_from('<H', section, 8)[0]
+            offsets = struct.unpack_from('<'+str(count)+'I', section, 12)
+            names = [section[12+offset:].split(b'\0', 1)[0] for offset in offsets]
+            if b'External_00.bffnt' in names:
+                return original, names.index(b'External_00.bffnt')
+            strings = section[12+4*count:]
+            font = b'External_00.bffnt\0'
+            font += bytes(-len(font)%4)
+            extra = struct.pack('<I', 4*(count+1)+len(strings))
+            result = bytearray(section[:12]+b''.join(struct.pack('<I', o+4) for o in offsets)+extra+strings+font)
+            struct.pack_into('<I', result, 4, len(result))
+            struct.pack_into('<H', result, 8, count+1)
+            data = bytearray(original[:at]+result+original[at+size:])
+            struct.pack_into('<I', data, 12, len(data))
+            return bytes(data), count
+        at += size
+    raise ValueError('Contextual prompt has no font list')
+
+
+def resize_common_allocation(original, before, after):
+    """Keep Common.blarc's existing allocation overhead when its layouts grow."""
+    data = bytearray(unpack(original))
+    if data[:4] != b'RSTB':
+        raise ValueError('Expected BotW resource size table')
+    count = struct.unpack_from('<I', data, 4)[0]
+    key = zlib.crc32(b'Layout/Common.blarc')
+    entries = [12+8*i for i in range(count) if struct.unpack_from('<I', data, 12+8*i)[0] == key]
+    if len(entries) != 1:
+        raise ValueError('Missing Common.blarc resource allocation')
+    at = entries[0]+4
+    allocated = struct.unpack_from('<I', data, at)[0]
+    struct.pack_into('<I', data, at, (allocated+max(0, after-before)+31)&~31)
+    if original[:4] == b'Yaz0':
+        import oead
+        return bytes(oead.yaz0.compress(data, struct.unpack_from('>I', original, 8)[0]))
+    return bytes(data)
+
+
+def adapt_action_prompt(original, button, left_caption):
+    """Place contextual four-button hints at the physical DualSense positions.
+
+    The highlighted button and its caption move together. The left-hand square
+    uses the game's existing left-facing caption geometry, retaining its own
+    text, material references and animation targets.
+    """
+    original, font_index = action_prompt_font(original)
+    data = bytearray(original)
+    rows = layout_panes(original)
+    icon = next(r for r in rows if r['name'] == f'Nt_KeyTex{button}_00')
+    active = icon['ancestors'][-1]
+    dx, dy = (b-a for a, b in zip(SWITCH_FACE_POSITIONS[button], PS5_FACE_POSITIONS[button]))
+    for row in rows:
+        at, name = row['at'], row['name']
+        if name in (active, f'N_Capture{button}_00') or (
+                name == 'N_Attention_00' and row['ancestors'] == ('RootPane',)):
+            x, y = struct.unpack_from('<ff', original, at+44)
+            struct.pack_into('<ff', data, at+44, x+dx, y+dy)
+        elif row['kind'] == b'txt1' and row['ancestors'][-1:] == ('N_Loop_00',):
+            parts = name.split('_')
+            if len(parts) == 3 and parts[0] == 'T' and parts[1] in PS5_FACE_POSITIONS:
+                source = SWITCH_FACE_POSITIONS[parts[1]]
+                target = PS5_FACE_POSITIONS[parts[1]]
+                x, y = struct.unpack_from('<ff', original, at+44)
+                struct.pack_into('<ff', data, at+44, x+target[0]-source[0], y+target[1]-source[1])
+                struct.pack_into('<H', data, at+90, font_index)
+                text = struct.unpack_from('<I', original, at+100)[0]
+                struct.pack_into('<H', data, at+text, FACE_GLYPHS[parts[1]])
+    if button == 'X':
+        templates = {r['name']: r for r in layout_panes(left_caption)}
+        replacements = {
+            'N_CaptureX_00': 'N_CaptureY_00',
+            'T_GuideX_00': 'T_GuideY_00',
+            'Nt_KeyTexX_01': 'Nt_KeyTexY_01',
+            'P_CaptureUse_02': 'P_CaptureUse_02',
+            'W_BaseX_00': 'W_BaseY_00',
+            'T_GuideX_01': 'T_GuideY_01',
+        }
+        for row in rows:
+            if row['name'] not in replacements:
+                continue
+            template = templates[replacements[row['name']]]
+            at, other = row['at'], template['at']
+            if row['kind'] != template['kind'] or row['size'] != template['size']:
+                raise ValueError('Incompatible contextual caption geometry')
+            data[at+9] = left_caption[other+9]  # pane origin; never mirror the text
+            data[at+44:at+84] = left_caption[other+44:other+84]
+            if row['kind'] == b'txt1':
+                data[at+92:at+94] = left_caption[other+92:other+94]  # text alignment
+    return bytes(data)
+
+
 def donor_members(mod, dictionary, scratch):
     """Read an extracted mod directory or its RAR without executing its contents."""
     with tempfile.TemporaryDirectory(prefix='.controller-ui-', dir=scratch) as temporary:
@@ -422,13 +526,20 @@ def build(romfs, mod, dictionary, output):
         raise ValueError('No BotW Switch font archives found')
     boot = (romfs/'Pack/Bootup.pack').read_bytes()
     common = archive(boot)['Layout/Common.sblarc']
-    atlas, changed = adapt_textures(archive(common)['timg/__Combined.bntx'], donor_ui['timg/__Combined.bntx'])
+    members = archive(common)
+    atlas, changed = adapt_textures(members['timg/__Combined.bntx'], donor_ui['timg/__Combined.bntx'])
     layout = 'blyt/PaAllControllerTipsNN_00.bflyt'
-    common = replace_members(common, {'timg/__Combined.bntx': atlas,
-                                     layout: adapt_layout(archive(common)[layout])})
+    replacements = {'timg/__Combined.bntx': atlas, layout: adapt_layout(members[layout])}
+    left_caption = members['blyt/PaDoCommandY_00.bflyt']
+    for button in PS5_FACE_POSITIONS:
+        name = f'blyt/PaDoCommand{button}_00.bflyt'
+        replacements[name] = adapt_action_prompt(members[name], button, left_caption)
+    converted_common = replace_members(common, replacements, check_size=False)
+    files[RESOURCE_TABLE] = resize_common_allocation((romfs/RESOURCE_TABLE).read_bytes(),
+                                                    len(unpack(common)), len(unpack(converted_common)))
     # Bootup.pack has no RSTB entry: its outer allocation follows file size.
-    # The RSTB-sized, decompressed Common.blarc and fonts remain the same size.
-    files['Pack/Bootup.pack'] = replace_members(boot, {'Layout/Common.sblarc': common}, check_size=False)
+    # Common.blarc's allocation is updated above; font allocations stay unchanged.
+    files['Pack/Bootup.pack'] = replace_members(boot, {'Layout/Common.sblarc': converted_common}, check_size=False)
     output.mkdir(parents=True)
     for name, data in files.items():
         path = output/'romfs'/name
@@ -453,4 +564,5 @@ def build(romfs, mod, dictionary, output):
         'basic_left_order': ['Create', 'D-pad trio', 'movement/crouch'],
         'basic_dpad_adjustment': 'Compact 3-4 screen-pixel gaps; movement/crouch unchanged',
         'cluster_ring_size': CLUSTER_RING_SIZE,
+        'contextual_button_positions': PS5_FACE_POSITIONS,
         'dpad_guide': 'direct horizontal'}, indent=2))

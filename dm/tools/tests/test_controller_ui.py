@@ -1,5 +1,6 @@
 """Binary UI conversion contracts, using generated resources only."""
 import struct
+import zlib
 import sys
 import unittest
 import importlib.util
@@ -16,6 +17,98 @@ except ModuleNotFoundError:
 @unittest.skipIf(ui is None or importlib.util.find_spec('oead') is None,
                  'Optional UI conversion requires Pillow and oead')
 class ControllerUIConversionTests(unittest.TestCase):
+    @staticmethod
+    def action_prompt(button):
+        """Synthetic panes retain distinct materials and text for each layout."""
+        def pane(kind, name, x=0, y=0):
+            data = bytearray(200 if kind == b'txt1' else 148)
+            data[:4] = kind
+            struct.pack_into('<I', data, 4, len(data))
+            data[12:12+len(name)] = name.encode()
+            struct.pack_into('<10f', data, 44, x, y, 0, 0, 0, 0, 1, 1, 116, 30)
+            data[9] = 2 if button == 'Y' else 1
+            if kind == b'txt1':
+                data[88:90] = button.encode()*2  # material reference
+                struct.pack_into('<I', data, 100, 168)
+                data[92] = 2 if button == 'Y' else 1
+                data[180:184] = button.encode()*4  # text payload
+            if kind == b'wnd1' and button == 'Y':
+                struct.pack_into('<f', data, 68, -1)
+            return data
+        begin, end = b'pas1\x08\0\0\0', b'pae1\x08\0\0\0'
+        x, y = ui.SWITCH_FACE_POSITIONS[button]
+        left = button == 'Y'
+        active = 'N_BtnX_00' if left else f'N_Btn{button}_00'
+        body = pane(b'pan1', 'RootPane')+begin
+        body += pane(b'pan1', f'N_Capture{button}_00', x+(-60 if left else 60), y)+begin
+        body += pane(b'txt1', f'T_Guide{button}_00', 37 if left else -39)
+        body += pane(b'pic1', f'Nt_KeyTex{button}_01', 60 if left else -60)+end
+        body += pane(b'pan1', 'N_Loop_00')+begin
+        for other, (xx, yy) in ui.SWITCH_FACE_POSITIONS.items():
+            if other != button:
+                body += pane(b'txt1', f'T_{other}_00', xx, yy)
+        body += pane(b'pan1', active, x, y)+begin
+        body += pane(b'pic1', f'Nt_KeyTex{button}_00')
+        body += pane(b'pic1', 'P_CaptureUse_02', -60 if left else 60)
+        body += pane(b'wnd1', f'W_Base{button}_00', 33 if left else -33)
+        body += pane(b'txt1', f'T_Guide{button}_01', -23 if left else 21)+end+end+end
+        header = bytearray(20)
+        header[:6] = b'FLYT\xff\xfe'
+        struct.pack_into('<H', header, 6, 20)
+        fonts = bytearray(36)
+        fonts[:4] = b'fnl1'
+        struct.pack_into('<IHHI', fonts, 4, 36, 1, 0, 4)
+        fonts[16:33] = b'NormalS_00.bffnt\0'
+        return bytes(header+fonts+body)
+
+    def test_contextual_face_buttons_follow_physical_dualsense_positions(self):
+        left_caption = self.action_prompt('Y')
+        for button in 'ABXY':
+            with self.subTest(button=button):
+                original = self.action_prompt(button)
+                result = ui.adapt_action_prompt(original, button, left_caption)
+                rows = ui.layout_panes(result)
+                active = next(r for r in rows if r['name'] == f'Nt_KeyTex{button}_00')
+                self.assertEqual(active['world'][4:6], ui.PS5_FACE_POSITIONS[button])
+                for other in 'ABXY':
+                    if other != button:
+                        row = next(r for r in rows if r['name'] == f'T_{other}_00')
+                        self.assertEqual(row['world'][4:6], ui.PS5_FACE_POSITIONS[other])
+                self.assertEqual(len(result), len(original)+24)
+                original_rows = {r['name']: r for r in ui.layout_panes(original)}
+                for row in rows:
+                    if row['kind'] == b'txt1':
+                        at, before = row['at'], original_rows[row['name']]['at']
+                        self.assertEqual(result[at+88:at+90], original[before+88:before+90])
+                        self.assertEqual(result[at+180:at+184], original[before+180:before+184])
+                        parts = row['name'].split('_')
+                        if parts[1] in ui.FACE_GLYPHS:
+                            self.assertEqual(struct.unpack_from('<H', result, at+90)[0], 1)
+                            self.assertEqual(struct.unpack_from('<H', result, at+168)[0], ui.FACE_GLYPHS[parts[1]])
+
+    def test_contextual_prompt_reuses_its_external_font_reference(self):
+        result, index = ui.action_prompt_font(self.action_prompt('A'))
+        again, reused = ui.action_prompt_font(result)
+        self.assertEqual(again, result)
+        self.assertEqual((index, reused), (1, 1))
+
+    def test_contextual_growth_updates_only_the_common_resource_allocation(self):
+        key = zlib.crc32(b'Layout/Common.blarc')
+        original = b'RSTB'+struct.pack('<II', 2, 0)+struct.pack('<IIII', 123, 8192, key, 4096)
+        result = ui.resize_common_allocation(original, 3000, 3024)
+        self.assertEqual(result[:24], original[:24])
+        self.assertEqual(struct.unpack_from('<I', result, 24)[0], 4128)
+
+    def test_square_caption_faces_left_without_mirroring_its_text(self):
+        result = ui.adapt_action_prompt(self.action_prompt('X'), 'X', self.action_prompt('Y'))
+        rows = {r['name']: r for r in ui.layout_panes(result)}
+        window, text = rows['W_BaseX_00'], rows['T_GuideX_01']
+        self.assertEqual(struct.unpack_from('<f', result, window['at']+68)[0], -1)
+        self.assertEqual(struct.unpack_from('<f', result, text['at']+68)[0], 1)
+        self.assertLess(text['world'][4], ui.PS5_FACE_POSITIONS['X'][0])
+        self.assertEqual(result[text['at']+9], 2)
+        self.assertEqual(result[text['at']+92], 2)
+
     def test_only_selected_archive_members_change(self):
         import oead
         writer = oead.SarcWriter(oead.Endianness.Little)
