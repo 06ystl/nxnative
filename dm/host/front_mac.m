@@ -11,6 +11,7 @@
 #include "dm_input.h"
 #include "front.h"
 #include "gamepad_mac.h"
+#include "controller_ui_mac.h"
 #include "input_focus_mac.h"
 #include "motion_mac.h"
 #include "bow_state_mac.h"
@@ -95,6 +96,13 @@ static void *guest_tramp(void *p) {
     ((guest_arg *)p)->fn(); LOG("客体线程结束"); exit(0);
 }
 
+static void guest_start(void *context) {
+    dm_controller_ui_mac_select(dm_gamepad_mac_is_dualsense());
+    pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 64u << 20);
+    pthread_t th; if (pthread_create(&th, &a, guest_tramp, context)) die("pthread_create guest");
+    pthread_attr_destroy(&a);
+}
+
 // Metal reads MTL_HUD_ENABLED when the process makes its first device, which can be before the window: set from DM_METAL_HUD before main (set in front_run, the HUD did not show)
 __attribute__((constructor)) static void hud_env(void) { if (getenv("DM_METAL_HUD") && atoi(getenv("DM_METAL_HUD"))) setenv("MTL_HUD_ENABLED", "1", 0); }
 void front_run(void (*guest)(void)) {
@@ -171,8 +179,8 @@ void front_run(void (*guest)(void)) {
         inputFocus = dm_mac_input_watch(NSApp, win, input_active);
         // Guest thread: 64 MiB stack (the Switch main thread stack is specified by npdm; the host gives plenty)
         static guest_arg ga; ga.fn = guest;
-        pthread_attr_t a; pthread_attr_init(&a); pthread_attr_setstacksize(&a, 64u << 20);
-        pthread_t th; if (pthread_create(&th, &a, guest_tramp, &ga)) die("pthread_create guest");
+        if (dm_controller_ui_mac_available()) dm_gamepad_mac_after_discovery(guest_start, &ga);
+        else guest_start(&ga);
         [NSApp run];
     }
 }

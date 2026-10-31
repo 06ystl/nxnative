@@ -57,7 +57,17 @@ def validate_shader_inputs(msl, chain, g):
 
 
 def build_app(repo, work, out, g, patched, romfs, msl, app_name, bundle_id,
-              display_version, icon, aoc, env_file, env, run, can_clone):
+              display_version, icon, aoc, env_file, env, run, can_clone, controller_ui=None):
+    ui_out = out.parent / 'patches/dualsense-ui'
+    if controller_ui:
+        controller_ui = Path(controller_ui).expanduser().resolve()
+        marker = controller_ui / 'manifest.tsv'
+        if not marker.is_file() or not marker.read_text().startswith('game\t'+g.id+'\n') or not (controller_ui/'romfs').is_dir():
+            raise PackageError(f'Not a compatible controller UI pack for {g.id}: {controller_ui}')
+        if ui_out.exists():
+            marker = ui_out/'manifest.tsv'
+            if not marker.is_file() or not marker.read_text().startswith('game\t'+g.id+'\n'):
+                raise PackageError(f'Refusing to replace an unrelated patch directory: {ui_out}')
     chain = re.search(r'^#define DMSH_CHAIN "([^"]+)"', (repo / 'dm/gfx/nvn/dmsh_chain.h').read_text(), re.M).group(1)
     libraries, minimum = shader_inventory(msl, chain)
     validate_shader_inputs(msl, chain, g)
@@ -98,15 +108,16 @@ def build_app(repo, work, out, g, patched, romfs, msl, app_name, bundle_id,
         run([env['FONT_PY'], repo / 'dm/tools/make_ext_font.py', font / 'nintendo_ext.ttf'], logs / 'font.log', env=env)
         # APFS clones keep an app self-contained without duplicating unchanged resource blocks.
         clone = can_clone(res)
-        required = sum(p.stat().st_size for root in (romfs, aoc) if root and
+        required = sum(p.stat().st_size for root in (romfs, aoc, controller_ui) if root and
                        not (clone and root.stat().st_dev == res.stat().st_dev)
                        for p in root.rglob('*') if p.is_file())
         if shutil.disk_usage(res).free < required + 512 * 2**20:
             raise PackageError(f'Not enough free space to copy game resources to {out.parent}')
-        for source, name in ((romfs, 'romfs'), (aoc, 'aoc')):
+        for source, name, destination in ((romfs, 'romfs', res/'romfs'), (aoc, 'aoc', res/'aoc'),
+                                          (controller_ui, 'controller-ui', Path(staging)/'dualsense-ui')):
             if source:
                 flag = '-cR' if clone and source.stat().st_dev == res.stat().st_dev else '-R'
-                run(['cp', flag, source, res / name], logs / f'{name}_copy.log', env=env)
+                run(['cp', flag, source, destination], logs / (name+'_copy.log'), env=env)
         info = dict(CFBundleName=app_name, CFBundleDisplayName=app_name,
                     CFBundleIdentifier=bundle_id, CFBundleExecutable='nxnative',
                     CFBundlePackageType='APPL', CFBundleShortVersionString=display_version,
@@ -134,9 +145,19 @@ def build_app(repo, work, out, g, patched, romfs, msl, app_name, bundle_id,
         run(['codesign', '--force', '--sign', '-', app], logs / 'codesign.log', env=env)
         run(['codesign', '--verify', '--strict', app], logs / 'codesign_verify.log', env=env)
         previous = Path(staging) / 'previous.app'
-        if out.exists(): out.rename(previous)
-        try: app.rename(out)
+        previous_ui = Path(staging) / 'previous-dualsense-ui'
+        ui_installed = False
+        try:
+            if controller_ui:
+                ui_out.parent.mkdir(parents=True, exist_ok=True)
+                if ui_out.exists(): ui_out.rename(previous_ui)
+                (Path(staging)/'dualsense-ui').rename(ui_out)
+                ui_installed = True
+            if out.exists(): out.rename(previous)
+            app.rename(out)
         except OSError:
             if previous.exists(): previous.rename(out)
+            if ui_installed: shutil.rmtree(ui_out)
+            if previous_ui.exists(): previous_ui.rename(ui_out)
             raise
     return minimum

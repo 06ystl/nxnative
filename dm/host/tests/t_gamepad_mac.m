@@ -33,6 +33,7 @@ void hle_signal_system_event(void *event) { (void)event; }
 
 static int checks, fails;
 static int keyboard_enabled;
+static void discovered(void *context) { (*(int *)context)++; }
 static void input_changed(int keyboard, int controller) {
     keyboard_enabled = keyboard;
     dm_gamepad_mac_set_active(controller);
@@ -68,6 +69,7 @@ int main(void) {
         dm_gamepad_mac_set_active(1);
         [g.buttonA setValue:1];
         pad_select(@[first]);
+        CHECK(!dm_gamepad_mac_is_dualsense(), "an extended profile alone does not identify a DualSense");
         CHECK(buttons() == DM_BTN_A, "already-connected controller publishes its held buttons immediately");
         [g.buttonA setValue:0]; changed(g);
         CHECK(buttons() == 0, "face button release reaches the game");
@@ -243,6 +245,20 @@ int main(void) {
         dm_gamepad_mac_set_active(0);
         notify(NSApplicationDidBecomeActiveNotification, app); settle();
         CHECK(buttons() == 0, "released watcher no longer handles notifications");
+
+        pad_select(@[]); connected = @[];
+        int ready = 0;
+        dm_gamepad_mac_after_discovery(discovered, &ready);
+        CHECK(ready == 0, "an initially empty registry waits for discovery before selecting cached UI");
+        connected = @[first]; pad_select(connected);
+        CHECK(ready == 1, "asynchronous initial controller discovery completes startup");
+        pad_select(connected); pad_discovery_timeout();
+        CHECK(ready == 1, "subsequent refresh and timeout cannot restart the guest");
+        dm_gamepad_mac_after_discovery(discovered, &ready);
+        CHECK(ready == 2, "an already discovered controller does not delay startup");
+        connected = @[]; pad_select(connected);
+        dm_gamepad_mac_after_discovery(discovered, &ready); pad_discovery_timeout();
+        CHECK(ready == 3 && !dm_gamepad_mac_is_dualsense(), "keyboard-only startup completes with original prompts after discovery");
 
         dm_pad_set(DM_BTN_PLUS, 0, 0, 0, 0); sample();
         setenv("DM_KEYS", "0:Plus~10", 1);

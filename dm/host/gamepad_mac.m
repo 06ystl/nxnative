@@ -13,6 +13,19 @@
 static GCController *g_mac_controller;
 static GCExtendedGamepad *g_mac_profile;
 static int g_mac_input_active, g_mac_scripted;
+static void (*g_discovered)(void *);
+static void *g_discovery_context;
+
+static void pad_discovered(void) {
+    if (!g_discovered) return;
+    void (*ready)(void *) = g_discovered; void *context = g_discovery_context;
+    g_discovered = NULL; g_discovery_context = NULL;
+    ready(context);
+}
+
+int dm_gamepad_mac_is_dualsense(void) {
+    return [g_mac_profile isKindOfClass:GCDualSenseGamepad.class];
+}
 
 static void pad_axes(GCControllerDirectionPad *stick, int32_t *x, int32_t *y) {
     float sx = fmaxf(-1, fminf(1, stick.xAxis.value));
@@ -70,6 +83,21 @@ static void pad_select(NSArray<GCController *> *controllers) {
     } else if (changed) fprintf(stderr, "[dm] Mac controller disconnected; keyboard remains available\n");
     dm_controller_motion_attach(next);
     pad_read(g_mac_profile);
+    if (g_mac_profile) pad_discovered();
+}
+
+static void pad_discovery_timeout(void) {
+    if (!g_discovered) return;
+    pad_select(GCController.controllers);
+    pad_discovered();
+}
+
+void dm_gamepad_mac_after_discovery(void (*ready)(void *), void *context) {
+    if (g_mac_profile || g_mac_scripted) { ready(context); return; }
+    g_discovered = ready; g_discovery_context = context;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        pad_discovery_timeout();
+    });
 }
 
 void dm_gamepad_mac_start(void) {

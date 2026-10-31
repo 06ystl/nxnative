@@ -24,6 +24,7 @@ APP_NAME = ''                           # empty = the name in the base NSP
 BUNDLE_ID = ''                          # empty = org.nxnative.<base title ID in lowercase>
 KEEP_EXTRACTED = False                  # retain extraction after a successful build
 DM_ENV_FILE = ''                        # optional diagnostic switches (one KEY=VALUE per line)
+CONTROLLER_UI = ''                      # optional local PS5 UI pack for macOS
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_ipa_from_nsp as nsp
@@ -43,6 +44,7 @@ def parse_args(argv):
     ap.add_argument('--bundle-id', default=BUNDLE_ID, help='Bundle ID for both apps')
     ap.add_argument('--keep-extracted', action='store_true', default=KEEP_EXTRACTED, help='Keep extracted game files on success')
     ap.add_argument('--env-file', default=DM_ENV_FILE, help='Diagnostic switches bundled in each selected app')
+    ap.add_argument('--controller-ui', default=CONTROLLER_UI, help='Install a prepared DualSense UI pack beside the Mac app in patches/dualsense-ui')
     return ap.parse_args(argv)
 
 
@@ -151,7 +153,8 @@ def main(args=None):
             if target == 'macos':
                 minimum = package_app.build_app(repo, work, out, g, patched, game / 'RomFS', sh / 'cache',
                                                 name, bundle_id, builds[pkg]['display'], icon, aoc,
-                                                env_file, env, nsp.run, nsp.can_clone)
+                                                env_file, env, nsp.run, nsp.can_clone,
+                                                controller_ui=getattr(args, 'controller_ui', None))
                 nsp.say(f'Mac app ready (macOS {minimum}+): {out}')
             else:
                 package_ios(repo, work, out, g, patched, game / 'RomFS', ios, name, bundle_id,

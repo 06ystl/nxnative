@@ -1,5 +1,6 @@
 """Packaging failure recovery and mixed cached shader targets; no game files needed."""
 import plistlib
+import shutil
 import sys
 import tempfile
 import unittest
@@ -69,7 +70,7 @@ class PackagingTests(unittest.TestCase):
         with self.assertRaisesRegex(PackageError, 'do not match game profile'):
             validate_shader_inputs(self.msl, 'fixture', profile)
 
-    def test_signature_failure_keeps_previous_app_and_removes_staging(self):
+    def packaging_fixture(self, fail_signature=False, external_ui=False, fail_swap=False):
         repo = self.root / 'repo'; (repo / 'dm/host').mkdir(parents=True)
         (repo / 'dm/host/dmhost_app').write_bytes(b'fixture host')
         license_file = repo / 'dm/third_party/dualsense-trigger/LICENSE'
@@ -92,23 +93,61 @@ class PackagingTests(unittest.TestCase):
         with (out / 'Contents/Info.plist').open('wb') as f:
             plistlib.dump({'CFBundleIdentifier': 'org.nxnative.fixture'}, f)
         (out / 'previous-build').write_text('keep me')
+        ui = None
+        ui_out = out.parent/'patches/dualsense-ui'
+        if external_ui:
+            ui = self.root/'new-ui'; (ui/'romfs').mkdir(parents=True)
+            (ui/'manifest.tsv').write_text('game\tfixture\n')
+            (ui/'romfs/button').write_text('new PS5 icon')
+            (ui_out/'romfs').mkdir(parents=True)
+            (ui_out/'manifest.tsv').write_text('game\tfixture\n')
+            (ui_out/'romfs/button').write_text('old PS5 icon')
 
         def run(cmd, log, env=None, cwd=None, on_line=None):
             if cmd[0] == 'python-fixture': Path(cmd[-1]).write_bytes(b'font')
+            if cmd[0] == 'cp': shutil.copytree(cmd[-2], cmd[-1])
             if cmd[0] == 'codesign':
                 self.assertEqual((Path(cmd[-1]) / 'Contents/Resources/licenses/dualsense-trigger.txt').read_text(), 'fixture trigger license')
                 with (Path(cmd[-1]) / 'Contents/Info.plist').open('rb') as f: info = plistlib.load(f)
                 self.assertTrue(info['GCSupportsControllerUserInteraction'])
                 self.assertEqual(info['GCSupportedGameControllers'], [{'ProfileName': 'ExtendedGamepad'}])
-                raise RuntimeError('signature failed')
+                self.assertFalse((Path(cmd[-1])/'Contents/Resources/controller-ui').exists())
+                if external_ui: self.assertEqual((ui_out/'romfs/button').read_text(), 'old PS5 icon')
+                if fail_signature: raise RuntimeError('signature failed')
 
-        with patch('package_app.subprocess.check_output', return_value='arm64'):
-            with self.assertRaisesRegex(RuntimeError, 'signature failed'):
-                build_app(repo, self.root, out, profile, patched, romfs, self.msl,
-                          'Fixture', 'org.nxnative.fixture', '1.0', font, None, None,
-                          {'FONT_PY': 'python-fixture', 'STD_FONT': str(font)}, run, lambda _: False)
+        rename = Path.rename
+        def rename_candidate(path, target):
+            if fail_swap and path.name == out.name and path.parent.name.startswith('.nxnative-mac-'):
+                raise OSError('app swap failed')
+            return rename(path, target)
+        with patch('package_app.subprocess.check_output', return_value='arm64'), \
+                patch.object(Path, 'rename', rename_candidate):
+            build_app(repo, self.root, out, profile, patched, romfs, self.msl,
+                      'Fixture', 'org.nxnative.fixture', '1.0', font, None, None,
+                      {'FONT_PY': 'python-fixture', 'STD_FONT': str(font)}, run, lambda _: False,
+                      controller_ui=ui)
+        return out, romfs, ui_out
+
+    def test_signature_failure_keeps_previous_app_and_removes_staging(self):
+        with self.assertRaisesRegex(RuntimeError, 'signature failed'):
+            self.packaging_fixture(fail_signature=True)
+        out = self.root/"玩家's App.app"
         self.assertEqual((out / 'previous-build').read_text(), 'keep me')
-        self.assertTrue((romfs / 'resource').is_file())
+        self.assertTrue((self.root/'RomFS/resource').is_file())
+        self.assertEqual(list(self.root.glob('.nxnative-mac-*')), [])
+
+    def test_external_patch_is_installed_beside_the_signed_app(self):
+        out, _, ui = self.packaging_fixture(external_ui=True)
+        self.assertEqual((ui/'romfs/button').read_text(), 'new PS5 icon')
+        self.assertFalse((out/'Contents/Resources/controller-ui').exists())
+        self.assertFalse((out/'previous-build').exists())
+        self.assertEqual(list(self.root.glob('.nxnative-mac-*')), [])
+
+    def test_app_swap_failure_restores_both_previous_app_and_external_patch(self):
+        with self.assertRaisesRegex(OSError, 'app swap failed'):
+            self.packaging_fixture(external_ui=True, fail_swap=True)
+        self.assertEqual((self.root/"玩家's App.app/previous-build").read_text(), 'keep me')
+        self.assertEqual((self.root/'patches/dualsense-ui/romfs/button').read_text(), 'old PS5 icon')
         self.assertEqual(list(self.root.glob('.nxnative-mac-*')), [])
 
 

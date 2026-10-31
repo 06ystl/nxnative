@@ -77,7 +77,7 @@ tsan: $(B)/t_audio_spsc_tsan
 	$(B)/t_audio_spsc_tsan
 
 
-run-mac-input: $(B)/t_padmap $(B)/t_gamepad_mac $(B)/t_hid_axes_script $(B)/t_rumble_mac $(B)/t_motion_mac $(B)/t_motion_dsu $(B)/t_resolution_mac $(B)/t_timing_mac
+run-mac-input: $(B)/t_padmap $(B)/t_gamepad_mac $(B)/t_hid_axes_script $(B)/t_rumble_mac $(B)/t_motion_mac $(B)/t_motion_dsu $(B)/t_resolution_mac $(B)/t_timing_mac $(B)/t_controller_ui_mac
 	$(B)/t_padmap
 	$(B)/t_gamepad_mac
 	$(B)/t_hid_axes_script
@@ -86,6 +86,10 @@ run-mac-input: $(B)/t_padmap $(B)/t_gamepad_mac $(B)/t_hid_axes_script $(B)/t_ru
 	$(B)/t_motion_dsu
 	$(B)/t_resolution_mac
 	$(B)/t_timing_mac
+	$(B)/t_controller_ui_mac
+
+$(B)/t_controller_ui_mac: t_controller_ui_mac.c t_fs_stub.c ../controller_ui_mac.c ../controller_ui_mac.h ../hle_fs.c ../hle_bigstack.c $(GAME_H) | $(B)
+	clang -O1 -Wall -Werror -Wno-unused-function $(GINC) -I.. -o $@ t_controller_ui_mac.c t_fs_stub.c ../hle_bigstack.c
 
 $(B)/t_padmap: t_padmap.c ../dm_padmap.h ../dm_input.h | $(B)
 	clang -O1 -Wall -Werror -o $@ t_padmap.c

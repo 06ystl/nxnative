@@ -6,6 +6,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "game_profile.h"
+#include "../host/controller_ui_mac.h"
 
 void dm_host_shutdown(const char *why);
 
@@ -51,6 +52,7 @@ int dm_app_bootstrap(int *argc, char ***argv) {
         NSString *res = bundle.resourcePath, *bid = bundle.bundleIdentifier;
         if (!bid.length || ![bundle.bundlePath.pathExtension isEqualToString:@"app"])
             return boot_error(@"Launch the packaged .app. Use dmhost for command-line runs.");
+        dm_controller_ui_mac_set_app_bundle(bundle.bundlePath.fileSystemRepresentation);
         NSFileManager *fm = NSFileManager.defaultManager;
         NSString *support = [NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:bid];
         NSString *logs = [[NSSearchPathForDirectoriesInDomains(NSLibraryDirectory, NSUserDomainMask, YES).firstObject stringByAppendingPathComponent:@"Logs"] stringByAppendingPathComponent:bid];

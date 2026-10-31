@@ -22,6 +22,7 @@ APP_NAME = ''                           # empty = the game name from the base NS
 BUNDLE_ID = ''                          # empty = org.nxnative.<base title ID in lowercase>
 KEEP_EXTRACTED = False                  # retain extract/ for future builds
 DM_ENV_FILE = ''                        # optional KEY=VALUE file bundled for diagnostics
+CONTROLLER_UI = ''                      # optional prepared local DualSense UI pack
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import build_ipa_from_nsp as nsp
@@ -37,6 +38,7 @@ def parse_args(argv):
     ap.add_argument('--bundle-id', default=BUNDLE_ID, help='Bundle ID; also identifies the save and log folders')
     ap.add_argument('--keep-extracted', action='store_true', default=KEEP_EXTRACTED, help='Keep extracted game files after packaging')
     ap.add_argument('--env-file', default=DM_ENV_FILE, help='Diagnostic switches, one KEY=VALUE per line')
+    ap.add_argument('--controller-ui', default=CONTROLLER_UI, help='Install a prepared DualSense UI pack beside the app in patches/dualsense-ui')
     return ap.parse_args(argv)
 
 
@@ -129,7 +131,8 @@ def main(args=None):
     try:
         minimum = package_app.build_app(repo, work, out, g, patched, game / 'RomFS', sh / 'cache',
                                         app_name, bundle_id, g.builds()[pkg]['display'], icon, aoc,
-                                        env_file, env, nsp.run, nsp.can_clone)
+                                        env_file, env, nsp.run, nsp.can_clone,
+                                        controller_ui=getattr(args, 'controller_ui', None))
     except package_app.PackageError as e: raise nsp.BuildError(str(e)) from e
     nsp.rmtree(work / 'tmp')
     if not args.keep_extracted: nsp.rmtree(ex)
