@@ -60,7 +60,7 @@ Used at `DM_FPS_TARGET=0` and for the interval the framework keeps while the VFR
 
 ## GPU work
 
-- **Submissions in segments.** The game does not submit frame N+1 until frame N's GPU work is done: in the shrine the main thread sat in `nvnSyncWait` 59% of the time and the render thread in `nvnQueueSubmitCommands` 40%. That submit is the host's translation (about 3,600 draws and 347 passes, 7 ms), so the GPU ran 13–14 ms and then sat idle 7.7 ms a frame. The replay now commits every 64 draws between two passes (`sub_cut`, `DM_NVN_CUT`): GPU idle 7.7 → 3.8 ms, most of the rest the game's own work between its fence wait and the next submit (about 2.5 ms).
+- **Submissions in segments.** The game does not submit frame N+1 until frame N's GPU work is done: in the shrine the main thread sat in `nvnSyncWait` 59% of the time and the render thread in `nvnQueueSubmitCommands` 40%. That submit is the host's translation (about 3,600 draws and 347 passes, 7 ms), so the GPU ran 13–14 ms and then sat idle 7.7 ms a frame. The original segmented replay committed every 64 draws between two passes (`sub_cut`, `DM_NVN_CUT`): GPU idle 7.7 → 3.8 ms, most of the rest the game's own work between its fence wait and the next submit (about 2.5 ms).
 - **Shrine of Resurrection on the Mac (M4 Pro)**, after the above: docked (1600×900) GPU about 13 ms, frame p50 16.7 ms (60 fps; p90 17.6 ms), was 20.8 ms before segmenting; handheld (`DM_OPMODE=0`, 1280×720) GPU p50 9.3 ms and a steady 60. Host translation is 8 ms a frame (22,000 instructions per draw), spread over Metal's encoder creation and draw calls, argument encoding, retain / release and pool lookups. `DM_NVN_PASSGPU` is off under Metal 4, so GPU time cannot be attributed to passes. The frame loaded 376 MB and stored 432 MB of render-target data (325 of 347 passes load and store everything).
 - **Outdoors (2026-10-21, the user's Great Plateau save, Mac M4 Pro).** A frame had about 386 render passes and loaded and stored about 900 MB of attachments (on an iPhone at 60 fps about 55 GB/s, near the memory's bandwidth). 220 passes ended only because the game updates the first 64 bytes of a 64 KB vertex uniform block (`0x70c38c0000`) before each draw group while its shaders read up to 544 bytes of it (the terrain pixel shader `eb0afe555b86da79` indexes the whole block). Partial-cover uniform shadows (`ubp_get`, `DM_NVN_UB_PARTIAL`) and `cb_extent.tsv` keep those passes open: 386 → about 165 passes, GPU p50 about 9.3 → 6.5 ms, submit 5.7 → 4.9 ms; `DM_NVN_UBP_CHECK=1` found every shadow equal to the GPU's memory (968,000 checked). Lazy clears fold the four clear-only passes before the G-buffer into its first pass (about 30 MB less a frame at 1600x900). The frame still loads and stores about 800 MB: the NintendoWare VFX GPU particles run one compute dispatch per emitter between draws (ten 800x450 half-resolution passes and two G-buffer passes, about 190 MB a frame; the G-buffer ones read the depth being drawn), and decals sample the G-buffer right after the game sets it again. Tried and dropped: `DM_NVN_TBDR=1` (10–15% fewer stores, more CPU, red ledger lines, deferred uniform updates off), `DM_NVN_BARRIER=game` (no gain), same-target continuation outside TBDR mode.
 - **Cube map filter every tenth frame (current, resolved).** Every tenth frame starts by filtering the environment cube map: 132 one-draw passes into 64x64 to 8x8 faces (22 levels of 6 faces, `f8d9bbda1e0ebb0a` with `2ab186d450f5b32c` / `cfc85e532ccf8dd2`, game barrier `0x12` only between levels), so the G-buffer started 7–9 ms into that frame instead of 1.5 ms and the frame took about 5 ms more GPU time: the regular spike in the Metal HUD's frame-time line. The faces of a level now run as one layered pass ([passes into other layers of one texture level](../../../docs/reference/rendering.md#passes-into-other-layers-of-one-texture-level-run-as-one-layered-pass)): 284 → 173 passes in that frame; Zora's Domain at 900p, FPS 120 (M2 Max), frame p50 10.51 → 10.23 ms, p95 13.16 → 11.11 ms, mean window max 15.6 → 12.1 ms, GPU p95 13.0 → 8.7 ms, 95 → 98 fps.
@@ -69,6 +69,61 @@ Used at `DM_FPS_TARGET=0` and for the interval the framework keeps while the VFR
 
 - **Shrines at 20–27 fps (GitHub issues #534 and #598; current, the fix not yet seen in a shrine).** The reporters' shrines (Oman Au on a MacBook Air M2; every shrine on an M3) run at 20–27 fps where the open world holds 60. In the #598 log the slow stretches have about 1,000 draws a frame, as the fast ones, but a GPU time of about 36 ms against 9–13 ms. They have about 240 `passes ended to land them for a read` a frame, all `refused … other GPU writes`, and 280–330 `load-all store-all passes` against about 100. The probe on the Shrine of Resurrection save found the one write behind that refusal there: the GPU particle dispatch `9f8116baffddaf81` binds its three outputs with size 0, which counted as a write anywhere ([A storage buffer bound with size 0 counted as a write anywhere](../../../docs/reference/rendering.md#a-storage-buffer-bound-with-size-0-counted-as-a-write-anywhere)). With the fix, that save's world-load burst (1,200 refusals) is gone. Opening Oman Au's final gate ends the slowdown even out of view (#534): an emitter that stops with the gate would fit, but no shrine save was here to show it.
 - **Present snapshots (Mac).** The game's two swapchain textures held its CPU work to display ticks and the GPU at 444 MHz on an M2 Max ([present snapshots](../../../docs/reference/frame-rate.md#present-snapshots-the-games-swapchain-texture-free-at-once)). Judged by cost, the frame step stepped to 30 at a GPU time of 0.75 vsyncs. Zora's Domain from a Cemu save (120 Hz), frames on screen longer than 1/60 s by a quarter: 64 of 8,684 with neither, 41 with the GPU filler alone, 4 of 10,800 with snapshots alone (no step to 30 in 3 minutes, at 444 MHz throughout).
+
+### Mac 1440p submission tuning
+
+Apple M1 Pro, macOS 27.0.1, 2026-10-31, native 2560x1440, the Zora bridge
+save and fixed camera of the [1440p validation](#native-mac-1440p-validation).
+Audio and the window were disabled, with a 60 fps target. Independent save
+copies started each run; measurements cover seconds 40–70, with screenshots
+after that window. Weather and animation continued normally.
+
+The comparison used MacNativeGames main `933b6a0d` as a reference, especially
+[its measured follow-ups](https://github.com/ly05010419/MacNativeGames/blob/933b6a0d1438de160208a0a13eb5e8d7a2cb8094/docs/performance-followups.md).
+Several of its caches and submission mechanisms were already present here.
+A new scalar texture/sampler cache produced 51.3 / 52.5 fps versus 51.9 / 52.4
+with it disabled, and was discarded. Omitting unused depth/stencil planes
+reduced attachment loads from about 1119 to 1062 MB per frame but ran at
+50.1 fps versus 52.4 in the profiled control; it was discarded too.
+
+Shorter submissions had a repeatable benefit. These are pooled frame samples,
+not averages of percentiles; all runs used the original host with only the
+existing submission threshold overridden:
+
+| Threshold | Windows | Generated fps | Frame p50 / p95 / p99 / max, ms | Frames over 25 ms |
+|---|---:|---:|---|---:|
+| 64 draws | 3 × 30 s | 52.3 | 19.02 / 20.28 / 21.12 / 35.45 | 7 |
+| 16 draws | 2 × 30 s | 54.7 | 18.13 / 19.66 / 20.19 / 33.55 | 1 |
+
+The two short-batch runs were 54.9 and 54.5 fps; the final 64-draw control was
+52.5 fps. Encoding on a separate thread gave 53.6 / 55.1 fps, but pooled p99
+was 22.04 ms and the maximum 40.86 ms, so that default was left unchanged.
+A trial that selected smaller batches only after a newest-fence wait did not
+reach the shorter batches in this workload (51.8 fps) and was discarded.
+
+The Mac default is now 16, preserving all render passes, clears, barriers,
+uploads and final-fence completion effects. iOS retains 64, and the existing
+`DM_NVN_CUT` override still selects a fixed threshold or disables draw-count
+cuts. The shader chain, resolution presets and rendering content are unchanged.
+
+The delivered default was then rebuilt and run without a threshold override:
+
+| Build / resolution | Generated fps | Frame p50 / p95 / p99 / max, ms | GPU mean, ms |
+|---|---:|---|---:|
+| Original, 1080p | 59.9 | 16.65 / 17.46 / 18.05 / 58.68 | 12.76 |
+| New default, 1080p | 60.0 | 16.68 / 17.32 / 17.58 / 25.29 | 12.69 |
+| New default, 1440p | 54.2 | 18.30 / 19.85 / 20.47 / 29.43 | 16.66 |
+
+Each row covers a 30-second window. Scene and inventory screenshots at both
+resolutions were inspected, with no new rendering errors. Metal validation
+passed the production replay's performance-ordering, queue-origin and uniform
+snapshot tests, including both encoding modes. The packaged v4.20 App keeps
+1080p as its default and requires no new environment variable.
+
+Evidence: `01007EF00011E000-work/perf-v4.20/`, including the `slots-off-*`,
+`cut16*`, `cut64-final`, `enc-on-*`, `auto-qhd`, `baseline-fhd` and `final-*` runs. These are offscreen
+throughput measurements; foreground display pacing and other games were not
+measured.
 
 ## Rendering
 

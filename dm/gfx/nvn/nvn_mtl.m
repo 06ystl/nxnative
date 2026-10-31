@@ -10490,14 +10490,16 @@ __attribute__((weak)) void dm_game_frame_sample(uint64_t time_ns,uint64_t frame)
 __attribute__((weak)) double dm_game_frame_seconds(void) { return 0; }
 int mtl_fps_target(void) { int high=dm_game_frame_target();if(high>0)return high; static int env = -2; if (env == -2) { const char *e = getenv("DM_FPS"); env = e ? atoi(e) : -1; if (env != 30 && env != 60) env = -1; else MLOG("DM_FPS=%d: frame rate pinned by the test switch", env); }
     return env > 0 ? env : nvn_game_fps() == 30 ? 30 : 60; }
-// Hand a submission to the GPU in segments (DM_NVN_CUT=draw count, 0 = off; default 64): when the game holds back the next frame's submit until this frame's GPU work is done (The Legend of Zelda: Breath of the Wild: the main thread's nvnSyncWait on the fence of the frame just submitted),
+// Hand a submission to the GPU in segments (DM_NVN_CUT=draw count, 0 = off; default 16 on Mac, 64 on iOS): when the game holds back the next frame's submit until this frame's GPU work is done (The Legend of Zelda: Breath of the Wild: the main thread's nvnSyncWait on the fence of the frame just submitted),
 // the GPU sits idle for the milliseconds the host spends translating inside the submit (in the shrine each frame is GPU 13 ms + translation 7 ms back to back). Each time this many draws have accumulated, the command buffer encoded so far is committed between two passes: the GPU runs the earlier passes while the CPU translates the later ones.
 // Cut only when no encoder is open and no pass is deferred / merged / hoisted; commit this batch's uploads first (later draws use them). The fence signal and completion work stay on the last segment only: the queue executes in commit order and every encoder starts with a queue barrier
 // A buffer → texture copy is cut after as well, at the next pass boundary whatever the draw count (g_cut_copy, set by copy_b2t): on the Switch the GPU runs a submission's copies as soon as the
 // submit returns, and a game may reuse the copy's source right after. Catherine: Full Body's resource thread writes the next texture into the staging block 64 ms after the main thread
 // recorded a copy from it (main+0x305e64, frame start) and before that frame's submit had even returned: the host was building pipelines inside the submit for 300 ms, and committed the
 // copy only at its end, so the subtitle band's gradient (BC3, 32x512) came out as the next texture's blocks. Committed at the first pass boundary, the copies run while the host encodes the rest
-static int cut_draws(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_CUT"); v = e ? atoi(e) : 64; MLOG("分段提交：每 %d 次绘制在通道之间先交一段（DM_NVN_CUT，0 关）", v); } return v; }
+// Smaller Mac segments feed serialized frames sooner. Keep iOS's established
+// batching; explicit overrides, pass boundaries and final-fence ownership remain.
+static int cut_draws(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_CUT"); v = e ? atoi(e) : TARGET_OS_IPHONE ? 64 : 16; MLOG("分段提交：每 %d 次绘制在通道之间先交一段（DM_NVN_CUT，0 关）", v); } return v; }
 static uint64_t g_cut_draw0, g_cut_sub, g_cuts, g_copy_cuts;
 static void sub_cut(void) {
     int n = cut_draws();
