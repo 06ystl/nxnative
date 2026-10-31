@@ -134,15 +134,23 @@ Verify actual guarding against lock-on, two-handed weapons, bow aiming and menus
 Verify durability loss during a real block before enabling the extra impact.
 Unknown main builds lose this row when deriving a profile.
 
-### Mac footstep audio layout
+### Mac audio-event layout
 
-`mac_audio_footsteps` starts with a verified main build ID and an event-name token.
-Its 23 numeric columns follow `dm_foot_layout` in
-`dm/host/audio_footsteps_mac.h`: gameplay/player globals and lifecycle, event
+`mac_audio_events` starts with a verified main build ID and comma-separated
+case-sensitive event-name patterns. A plain name matches exactly; a leading `*`
+matches a suffix, a trailing `*` matches a prefix, and `*name*` matches a substring.
+Each pattern body is 1–63 letters, digits or underscores, starting with a letter;
+the complete list is at most 1023 characters. For example,
+`*FootStep*,FirstLand_*,PlayerHit` selects player/NPC footsteps, landing variants
+and the damage effect. Music, voice and UI events should remain outside the list.
+The legacy `mac_audio_footsteps` row still converts its token to `*token*`.
+Only one audio layout per main build is allowed across the two keys.
+Its 23 numeric columns follow `dm_audio_source_layout` in
+`dm/host/audio_sources_mac.h`: gameplay/player globals and lifecycle, event
 register, event generation and resource name, child-list layout and active
 phases, sound handle/generation/state, and the WavePlayer vtable/FWAV field.
-Globals and the vtable are main-relative; fields are object-relative. The token
-matches within the event name so player and NPC footsteps use the same policy.
+Globals and the vtable are main-relative; fields are object-relative. Player and
+NPC sources use the same amplitude policy.
 
 A matching `OBS_AUDIO_EVENT` entry in that build's `patches.py` preserves the
 original instruction after common event creation. Verify immediate and delayed

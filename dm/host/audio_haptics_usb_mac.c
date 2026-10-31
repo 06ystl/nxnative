@@ -1,4 +1,5 @@
 #include "audio_haptics_usb_mac.h"
+#include "audio_haptics_dynamics.h"
 #include <AudioToolbox/AudioToolbox.h>
 #include <CoreAudio/CoreAudio.h>
 #include <IOKit/hid/IOHIDManager.h>
@@ -64,6 +65,7 @@ void dm_haptic_usb_set_trigger(unsigned side,const dm_trigger_slope *effect){
     memcpy(trigger_effects,effects,sizeof effects);trigger_owned=1;
 }
 static float last[2];
+static dm_haptic_dynamics dynamics; // AudioUnit callback owns processing; reset before start/after stop.
 static pthread_mutex_t producer_lock=PTHREAD_MUTEX_INITIALIZER;
 static _Atomic unsigned stat_callbacks,stat_queued,stat_signal,stat_layout,stat_dropped;
 static _Atomic float stat_input_peak,stat_output_peak;
@@ -83,19 +85,20 @@ static OSStatus render(void *ctx,AudioUnitRenderActionFlags *flags,const AudioTi
     for(UInt32 i=0;i<out->mNumberBuffers;i++)if(out->mBuffers[i].mData)memset(out->mBuffers[i].mData,0,out->mBuffers[i].mDataByteSize);
     unsigned serial=atomic_load_explicit(&flush_serial,memory_order_acquire);
     unsigned r=atomic_load_explicit(&read_pos,memory_order_relaxed);
-    if(serial!=consumed_flush){r=atomic_load(&flush_pos);last[0]=last[1]=0;consumed_flush=serial;}
+    if(serial!=consumed_flush){r=atomic_load(&flush_pos);last[0]=last[1]=0;dm_haptic_dynamics_reset(&dynamics);consumed_flush=serial;}
     unsigned w=atomic_load_explicit(&write_pos,memory_order_acquire);
-    if(!atomic_load(&active)){atomic_store_explicit(&read_pos,w,memory_order_release);last[0]=last[1]=0;return noErr;}
+    if(!atomic_load(&active)){atomic_store_explicit(&read_pos,w,memory_order_release);last[0]=last[1]=0;dm_haptic_dynamics_reset(&dynamics);return noErr;}
     if(out->mNumberBuffers!=1||out->mBuffers[0].mNumberChannels!=4||!out->mBuffers[0].mData||out->mBuffers[0].mDataByteSize<count*16){atomic_fetch_add_explicit(&stat_layout,1,memory_order_relaxed);return noErr;}
     float *dst=out->mBuffers[0].mData,g=atomic_load(&gain);
     unsigned signal=0;float peak=0;
     for(UInt32 i=0;i<count;i++){
-        if(r!=w){for(int c=0;c<2;c++){float v=samples[r%CAPACITY][c];last[c]=isfinite(v)?(float)fmax(-1.,fmin(1.,(double)v*g)):0;}r++;}
+        if(r!=w){for(int c=0;c<2;c++){float v=samples[r%CAPACITY][c];last[c]=isfinite(v)?v:0;}r++;}
         else {last[0]*=.85f;last[1]*=.85f;}
+        float shaped[2];dm_haptic_dynamics_process(&dynamics,(double)last[0]*g,(double)last[1]*g,shaped);
         // USB channels 1/2 are audible output; 3/4 drive the left/right actuators.
-        dst[4*i+2]=last[0];dst[4*i+3]=last[1];
-        if(last[0]!=0||last[1]!=0)signal++;
-        peak=fmaxf(peak,fmaxf(fabsf(last[0]),fabsf(last[1])));
+        dst[4*i+2]=shaped[0];dst[4*i+3]=shaped[1];
+        if(shaped[0]!=0||shaped[1]!=0)signal++;
+        peak=fmaxf(peak,fmaxf(fabsf(shaped[0]),fabsf(shaped[1])));
     }
     atomic_fetch_add_explicit(&stat_signal,signal,memory_order_relaxed);
     atomic_store_explicit(&stat_output_peak,fmaxf(atomic_load_explicit(&stat_output_peak,memory_order_relaxed),peak),memory_order_relaxed);
@@ -138,11 +141,13 @@ void dm_haptic_usb_close(void){
     pthread_mutex_lock(&producer_lock);
     atomic_store(&write_pos,0);atomic_store(&read_pos,0);last[0]=last[1]=0;
     atomic_store(&flush_serial,0);atomic_store(&flush_pos,0);consumed_flush=0;
+    dm_haptic_dynamics_reset(&dynamics);
     pthread_mutex_unlock(&producer_lock);
 }
 int dm_haptic_usb_open(void){
     if(atomic_load(&ready))return 1;
     reset_stats();
+    dm_haptic_dynamics_reset(&dynamics);
     AudioDeviceID device=find_audio();if(device==kAudioObjectUnknown){snprintf(status,sizeof status,"Exactly one four-channel DualSense USB audio device is required");return 0;}
     IOHIDManagerRef manager=IOHIDManagerCreate(kCFAllocatorDefault,kIOHIDOptionsTypeNone);
     if(!manager){snprintf(status,sizeof status,"Cannot enumerate USB controller");return 0;}

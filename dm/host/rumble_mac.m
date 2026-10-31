@@ -15,7 +15,7 @@
 #include "dm_input.h"
 #include "rumble_mac.h"
 #include "adaptive_trigger_mac.h"
-#include "audio_footsteps_mac.h"
+#include "audio_sources_mac.h"
 #include "audio_haptics_usb_mac.h"
 
 enum { RUMBLE_TICK_MS = 10, RUMBLE_EVENT_S = 30, RUMBLE_RENEW_S = 25, RUMBLE_RETRY_S = 5 };
@@ -40,13 +40,13 @@ static void audio_submit(const float *pcm, unsigned frames) {
         float peak = 0;
         for (size_t i = 0; i < queued * 2; i++) peak = fmaxf(peak, fabsf(pcm[i]));
         if (peak > 0) {
-            fprintf(stderr,"[dm] Audio haptics: selected footstep PCM reached USB queue (input peak %.6f)\n",peak);
+            fprintf(stderr,"[dm] Audio haptics: selected game PCM reached USB queue (input peak %.6f)\n",peak);
             reported = 1;
         }
     }
 }
 static void audio_close(void) {
-    dm_footsteps_set_active(0);
+    dm_audio_sources_set_active(0);
     dm_adaptive_trigger_set_usb_output(NULL);
     if (g_audio_haptics) {
         dm_haptic_usb_stats s = dm_haptic_usb_get_stats();
@@ -57,7 +57,7 @@ static void audio_close(void) {
     g_audio_haptics = 0;
 }
 static void audio_open(void) { // rumble queue; only the selected, unique DualSense
-    if (!dm_footsteps_configured() || ![g_rumble_controller.extendedGamepad isKindOfClass:GCDualSenseGamepad.class]) return;
+    if (!dm_audio_sources_configured() || ![g_rumble_controller.extendedGamepad isKindOfClass:GCDualSenseGamepad.class]) return;
     unsigned count = 0;
     for (GCController *c in GCController.controllers) if ([c.extendedGamepad isKindOfClass:GCDualSenseGamepad.class]) count++;
     if (count != 1) return;
@@ -229,7 +229,7 @@ static void rumble_tick(uint64_t now) { // rumble queue
 static void rumble_accept(void) { // rumble queue
     int eligible = g_rumble_active && !g_rumble_closed;
     // Stop ordinary engines before restoring the device audio mode.
-    if (eligible && !g_audio_haptics && dm_footsteps_configured() &&
+    if (eligible && !g_audio_haptics && dm_audio_sources_configured() &&
         [g_rumble_controller.extendedGamepad isKindOfClass:GCDualSenseGamepad.class] &&
         clock_gettime_nsec_np(CLOCK_MONOTONIC) >= g_audio_retry) {
         for (unsigned s = 0; s < 2; s++) rumble_retire(s);
@@ -237,7 +237,7 @@ static void rumble_accept(void) { // rumble queue
         g_audio_retry = clock_gettime_nsec_np(CLOCK_MONOTONIC) + RUMBLE_RETRY_S * 1000000000ull;
     }
     dm_haptic_usb_set_active(eligible && g_audio_haptics);
-    dm_footsteps_set_active(eligible && g_audio_haptics);
+    dm_audio_sources_set_active(eligible && g_audio_haptics);
     int on = eligible && !g_audio_haptics && g_rumble_haptics != nil;
     pthread_mutex_lock(&g_rumble_mu); g_rumble_accepting = on; if (!on) rumble_clear_want(); pthread_mutex_unlock(&g_rumble_mu);
     if (!on) for (unsigned s = 0; s < 2; s++) rumble_retire(s);
@@ -249,10 +249,10 @@ void dm_rumble_mac_start(void) {
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         g_rumble_gain = rumble_read_gain();
-        dm_footsteps_submit = audio_submit;
+        dm_audio_sources_submit = audio_submit;
         float gain = audio_read_gain();
         dm_haptic_usb_set_gain(gain);
-        if (dm_footsteps_configured()) fprintf(stderr,"[dm] Audio haptics gain: %.2fx (DM_AUDIO_HAPTICS_GAIN; PCM full scale +/-1)\n",gain);
+        if (dm_audio_sources_configured()) fprintf(stderr,"[dm] Audio haptics gain: %.2fx (DM_AUDIO_HAPTICS_GAIN; PCM full scale +/-1)\n",gain);
         g_rumble_queue = dispatch_queue_create("dm.controller.rumble", DISPATCH_QUEUE_SERIAL);
         dispatch_queue_set_specific(g_rumble_queue,&g_rumble_queue_key,&g_rumble_queue_key,NULL);
 #ifndef DM_RUMBLE_TEST

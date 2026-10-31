@@ -14,7 +14,7 @@
 #include "input_focus_mac.h"
 #include "motion_mac.h"
 #include "bow_state_mac.h"
-#include "audio_footsteps_mac.h"
+#include "audio_sources_mac.h"
 #include "adaptive_trigger_mac.h"
 #include "hle.h"
 #include <signal.h>
@@ -98,7 +98,7 @@ static void *guest_tramp(void *p) {
 // Metal reads MTL_HUD_ENABLED when the process makes its first device, which can be before the window: set from DM_METAL_HUD before main (set in front_run, the HUD did not show)
 __attribute__((constructor)) static void hud_env(void) { if (getenv("DM_METAL_HUD") && atoi(getenv("DM_METAL_HUD"))) setenv("MTL_HUD_ENABLED", "1", 0); }
 void front_run(void (*guest)(void)) {
-    dm_footsteps_prepare(g_mod, g_nmod);
+    dm_audio_sources_prepare(g_mod, g_nmod);
     dm_adaptive_shield_sample = dm_shield_mac_bind(g_mod, g_nmod) ? dm_shield_mac_sample : NULL;
     dm_adaptive_trigger_sample = dm_bow_mac_bind(g_mod, g_nmod) ? dm_bow_mac_sample : NULL;
     // A game: tell macOS its work is latency-critical, so the system does not trade its frame time for power while the frame rate is capped

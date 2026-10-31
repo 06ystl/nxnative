@@ -134,25 +134,46 @@ class MacShieldProfileTests(unittest.TestCase):
                 self.assertIn('#define DM_GAME_MAC_SHIELD_STATE {0}', game.header(profile))
 
 
-class MacAudioFootstepProfileTests(unittest.TestCase):
+class MacAudioEventProfileTests(unittest.TestCase):
+    def test_legacy_footstep_row_keeps_substring_selection(self):
+        profile = game.load('01007EF00011E000')
+        row = profile.values('mac_audio_events')[0].copy(); row[1] = 'FootStep'
+        profile.rows = [(k,v) for k,v in profile.rows if k != 'mac_audio_events']
+        profile.rows.append(('mac_audio_footsteps', row))
+        self.assertIn('"*FootStep*"', game.header(profile))
+
+    def test_patterns_are_bounded_and_build_unique_across_keys(self):
+        profile = game.load('01007EF00011E000')
+        row = profile.values('mac_audio_events')[0]
+        for value in ('*', 'A**B', 'A,,B', 'Voice|Bgm', '*A'*600):
+            with self.subTest(value=value[:20]):
+                candidate = copy.deepcopy(profile)
+                candidate.rows = [(k,v) for k,v in candidate.rows if k != 'mac_audio_events']
+                changed = row.copy(); changed[1] = value
+                candidate.rows.append(('mac_audio_events', changed))
+                with self.assertRaises(ValueError): game.header(candidate)
+        legacy = row.copy(); legacy[1] = 'FootStep'
+        profile.rows.append(('mac_audio_footsteps', legacy))
+        with self.assertRaisesRegex(ValueError, 'duplicate'): game.header(profile)
+
     def test_layout_requires_verified_build_and_valid_registers(self):
         profile = game.load('01007EF00011E000')
-        row = profile.values('mac_audio_footsteps')[0]
-        self.assertIn('DM_GAME_MAC_AUDIO_FOOTSTEPS', game.header(profile))
+        row = profile.values('mac_audio_events')[0]
+        self.assertIn('DM_GAME_MAC_AUDIO_EVENTS', game.header(profile))
         for field, value in [(0, '0'*32), (1, ''), (1, 'A'*64), (2, '-1'), (6, '256'), (8, '31'), (15, '5')]:
             with self.subTest(field=field):
                 candidate = copy.deepcopy(profile)
                 bad = row.copy(); bad[field] = value
-                candidate.rows = [(k,v) for k,v in candidate.rows if k != 'mac_audio_footsteps']
-                candidate.rows.append(('mac_audio_footsteps', bad))
+                candidate.rows = [(k,v) for k,v in candidate.rows if k != 'mac_audio_events']
+                candidate.rows.append(('mac_audio_events', bad))
                 with self.assertRaises(ValueError): game.header(candidate)
-        profile.rows.append(('mac_audio_footsteps', row.copy()))
+        profile.rows.append(('mac_audio_events', row.copy()))
         with self.assertRaisesRegex(ValueError, 'duplicate'): game.header(profile)
 
     def test_other_games_have_no_fixed_footstep_addresses(self):
         for profile in game.all_games():
-            if not profile.values('mac_audio_footsteps'):
-                self.assertIn('#define DM_GAME_MAC_AUDIO_FOOTSTEPS {0}', game.header(profile))
+            if not profile.values('mac_audio_events'):
+                self.assertIn('#define DM_GAME_MAC_AUDIO_EVENTS {0}', game.header(profile))
 
 
 if __name__ == '__main__':

@@ -5,9 +5,9 @@ static int checks,failed,dispatches,decodes,submits;static unsigned enabled=7;
 static float result[16];static uint8_t commands[4096],buffers[4*48],args[0x50];static int32_t audio[40*4];
 static unsigned used,count;
 #define CHECK(c,msg) do{checks++;if(!(c)){failed++;fprintf(stderr,"FAIL: %s\n",msg);}}while(0)
-unsigned dm_footsteps_begin(void){return enabled;}
-int dm_footsteps_source(uint64_t p){return p==0xfeed;}
-void dm_footsteps_finish(unsigned e,const float *p,unsigned n){if(e==enabled){submits++;memcpy(result,p,n*8);}}
+unsigned dm_audio_sources_begin(void){return enabled;}
+int dm_audio_sources_source(uint64_t p){return p==0xfeed;}
+void dm_audio_sources_finish(unsigned e,const float *p,unsigned n){if(e==enabled){submits++;memcpy(result,p,n*8);}}
 static void fake_decode(const void *a){(void)a;decodes++;}
 static void fake_dispatch(void *processor,const void *data){
     (void)processor;const uint8_t *c=data;dispatches++;

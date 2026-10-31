@@ -1,7 +1,7 @@
 // Observe the SDK's actual voice mix contributions. The original commands run
 // once, with their original buffers/state; capture never changes audible audio.
 #include "audio_haptics_dsp_mac.h"
-#include "audio_footsteps_mac.h"
+#include "audio_sources_mac.h"
 #include "hle.h"
 #include <math.h>
 
@@ -85,7 +85,7 @@ static int routes(const uint8_t *cl,size_t bytes){
 }
 void dm_audio_haptics_begin(const uint8_t *commands,size_t bytes){
     in_frame=0;tap.current=NULL;tap.nselected=0;
-    tap.epoch=dm_footsteps_begin();if(!tap.epoch)return;
+    tap.epoch=dm_audio_sources_begin();if(!tap.epoch)return;
     memset(tap.route,0,sizeof tap.route);memset(tap.stereo,0,sizeof tap.stereo);
     if(!routes(commands,bytes)){
         static int reported;if(!reported++){LOG("Audio haptics: unsupported downstream DSP graph; capture disabled");}
@@ -94,7 +94,7 @@ void dm_audio_haptics_begin(const uint8_t *commands,size_t bytes){
     in_frame=1;
 }
 void dm_audio_haptics_end(void){
-    if(in_frame)dm_footsteps_finish(tap.epoch,tap.stereo,tap.frames);
+    if(in_frame)dm_audio_sources_finish(tap.epoch,tap.stereo,tap.frames);
     in_frame=0;tap.current=NULL;
 }
 static unsigned destinations(const uint8_t *c,unsigned *out){
@@ -135,5 +135,5 @@ HLE_FORCE("_ZN2nn5audio3dsp21DecodeFromWaveBuffersERKNS1_25DecodeFromWaveBuffers
     if(!in_frame||!tap.current||tap.current[5]<1||tap.current[5]>6)return;
     uint32_t node=u32(tap.current+12);if(selected(node)||tap.nselected>=MAX_VOICES)return;
     const uint8_t *buffers=(const uint8_t*)(uintptr_t)u64(args+0x18);if(!buffers)return;
-    for(unsigned i=0;i<4;i++)if(dm_footsteps_source(u64(buffers+48*i))){tap.selected[tap.nselected++]=node;break;}
+    for(unsigned i=0;i<4;i++)if(dm_audio_sources_source(u64(buffers+48*i))){tap.selected[tap.nselected++]=node;break;}
 }
