@@ -2,10 +2,11 @@
 #include <stddef.h>
 #include "../audio_haptics_usb_mac.h"
 int test_audio_ready,test_audio_active,test_foot_active,test_audio_closed;
+int test_audio_configured,test_audio_open_count,test_audio_open_succeed;
 void (*dm_audio_sources_submit)(const float*,unsigned);
-int dm_audio_sources_configured(void){return 0;}
+int dm_audio_sources_configured(void){return test_audio_configured;}
 void dm_audio_sources_set_active(int on){test_foot_active=on;}
-int dm_haptic_usb_open(void){return 0;}
+int dm_haptic_usb_open(void){test_audio_open_count++;test_audio_ready=test_audio_open_succeed;return test_audio_ready;}
 void dm_haptic_usb_close(void){test_audio_ready=0;test_audio_closed++;}
 void dm_haptic_usb_set_active(int on){test_audio_active=on;}
 int dm_haptic_usb_ready(void){return test_audio_ready;}

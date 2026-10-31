@@ -207,14 +207,21 @@ static void rumble_play(unsigned side, dm_vibration_value value, uint64_t now) {
     } else if (intensity != g_rumble_intensity[side] || sharpness != g_rumble_sharpness[side])
         rumble_params(side,g_rumble_players[side],intensity,sharpness);
 }
-static void rumble_accept(void);
+static int audio_candidate(void) {
+    return dm_audio_sources_configured() &&
+           [g_rumble_controller.extendedGamepad isKindOfClass:GCDualSenseGamepad.class];
+}
+static void rumble_accept_at(uint64_t now);
+static void rumble_accept(void) { rumble_accept_at(clock_gettime_nsec_np(CLOCK_MONOTONIC)); }
 static void rumble_tick(uint64_t now) { // rumble queue
     dm_adaptive_trigger_tick(now);
     if (g_audio_haptics && !dm_haptic_usb_ready()) {
         audio_close(); g_audio_retry = now + RUMBLE_RETRY_S * 1000000000ull;
         fprintf(stderr,"[dm] Audio haptics: USB disconnected; using game rumble\n");
-        rumble_accept();
+        rumble_accept_at(now);
     }
+    if (g_rumble_active && !g_rumble_closed && !g_audio_haptics && audio_candidate() && now >= g_audio_retry)
+        rumble_accept_at(now);
     if (!g_rumble_active || g_rumble_closed || g_audio_haptics || !g_rumble_haptics) return;
     dm_vibration_value values[2];
     pthread_mutex_lock(&g_rumble_mu); memcpy(values,g_rumble_want,sizeof values); pthread_mutex_unlock(&g_rumble_mu);
@@ -226,22 +233,20 @@ static void rumble_tick(uint64_t now) { // rumble queue
         rumble_play(0,values[side],now);
     }
 }
-static void rumble_accept(void) { // rumble queue
+static void rumble_accept_at(uint64_t now) { // rumble queue
     int eligible = g_rumble_active && !g_rumble_closed;
     // Stop ordinary engines before restoring the device audio mode.
-    if (eligible && !g_audio_haptics && dm_audio_sources_configured() &&
-        [g_rumble_controller.extendedGamepad isKindOfClass:GCDualSenseGamepad.class] &&
-        clock_gettime_nsec_np(CLOCK_MONOTONIC) >= g_audio_retry) {
+    if (eligible && !g_audio_haptics && audio_candidate() && now >= g_audio_retry) {
         for (unsigned s = 0; s < 2; s++) rumble_retire(s);
         audio_open();
-        g_audio_retry = clock_gettime_nsec_np(CLOCK_MONOTONIC) + RUMBLE_RETRY_S * 1000000000ull;
+        g_audio_retry = now + RUMBLE_RETRY_S * 1000000000ull;
     }
     dm_haptic_usb_set_active(eligible && g_audio_haptics);
     dm_audio_sources_set_active(eligible && g_audio_haptics);
     int on = eligible && !g_audio_haptics && g_rumble_haptics != nil;
     pthread_mutex_lock(&g_rumble_mu); g_rumble_accepting = on; if (!on) rumble_clear_want(); pthread_mutex_unlock(&g_rumble_mu);
     if (!on) for (unsigned s = 0; s < 2; s++) rumble_retire(s);
-    int tick = g_rumble_active && !g_rumble_closed && (g_rumble_haptics || dm_adaptive_trigger_available());
+    int tick = g_rumble_active && !g_rumble_closed && (g_rumble_haptics || dm_adaptive_trigger_available() || audio_candidate());
     if (g_rumble_timer) dispatch_source_set_timer(g_rumble_timer, tick ? dispatch_time(DISPATCH_TIME_NOW,0) : DISPATCH_TIME_FOREVER,
                                                   RUMBLE_TICK_MS * NSEC_PER_MSEC, NSEC_PER_MSEC);
 }

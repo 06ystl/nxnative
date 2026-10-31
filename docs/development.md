@@ -683,7 +683,10 @@ trigger output resumes when USB audio ownership ends; the native state cache is
 invalidated before the next effect. Trigger updates never change audio volumes,
 LEDs or ordinary rumble amplitudes.
 
-USB loss restores ordinary rumble. Ineligibility invalidates pending events and
+USB loss restores ordinary rumble. The feedback timer retries a failed or lost
+USB stream every five seconds while the selected DualSense is eligible, without
+requiring focus changes or another controller notification. A healthy stream is
+not reopened, and hidden or closed games do not retry. Ineligibility invalidates pending events and
 queued audio. Menus suppress capture and discard one-shots and pending events,
 but retain still-live FWAV loop identities for the same resident player: the SDK
 resumes glider loops without creating new events. Player teardown, generation

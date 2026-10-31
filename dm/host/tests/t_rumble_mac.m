@@ -3,6 +3,7 @@
 #define DM_RUMBLE_TEST 1
 #include "../rumble_mac.m"
 #include "../hle_hid.c"
+#import <objc/runtime.h>
 
 static int checks, failed, opmode = 1;
 uint64_t dm_guest_frame(void) { return 0; }
@@ -300,6 +301,40 @@ static void test_shared_and_errors(void) {
     CHECK(p.haptics.engines.count==1,"shutdown cannot restart feedback");
 }
 extern int test_audio_ready,test_audio_active,test_foot_active,test_audio_closed;
+extern int test_audio_configured,test_audio_open_count,test_audio_open_succeed;
+@interface RumbleDualSenseProfile : NSObject
+@end
+@implementation RumbleDualSenseProfile
+- (BOOL)isKindOfClass:(Class)cls { return cls==GCDualSenseGamepad.class || [super isKindOfClass:cls]; }
+- (id)leftTrigger { return nil; }
+- (id)rightTrigger { return nil; }
+@end
+static NSArray *audio_test_controllers;
+static NSArray *audio_controller_registry(id object,SEL selector) { (void)object;(void)selector;return audio_test_controllers; }
+static void test_audio_retry(void) {
+    // Replace controller enumeration before enabling the audio route. Every
+    // device and output endpoint in this test is synthetic.
+    Method method=class_getClassMethod(GCController.class,@selector(controllers));
+    IMP original=method_setImplementation(method,(IMP)audio_controller_registry);
+    RumblePad *p=pad(1);p.extendedGamepad=(id)[RumbleDualSenseProfile new];audio_test_controllers=@[p];
+    dm_rumble_mac_set_active(0);test_audio_configured=1;test_audio_open_succeed=0;test_audio_open_count=0;
+    attach(p);dm_rumble_mac_set_active(1);
+    CHECK(test_audio_open_count==1&&!g_audio_haptics&&g_rumble_accepting,"initial USB failure retains ordinary rumble");
+    uint64_t retry=g_audio_retry;
+    tick(retry-1);CHECK(test_audio_open_count==1,"USB retries respect their backoff");
+    test_audio_open_succeed=1;tick(retry);
+    CHECK(test_audio_open_count==2&&g_audio_haptics&&test_audio_active&&test_foot_active,"timer restores delayed USB audio without focus or controller events");
+    tick(retry+10000000);
+    CHECK(test_audio_open_count==2&&!g_rumble_accepting,"a healthy USB stream is not reopened or mixed with native rumble");
+    test_audio_ready=0;tick(retry+20000000);
+    CHECK(!g_audio_haptics&&g_rumble_accepting&&!test_foot_active,"lost audio falls back while waiting to retry");
+    retry=g_audio_retry;dm_rumble_mac_set_active(0);tick(retry);
+    CHECK(test_audio_open_count==2&&!test_audio_active,"hidden games cannot reopen USB audio");
+    dm_rumble_mac_set_active(1);tick(retry);
+    CHECK(test_audio_open_count==3&&g_audio_haptics&&test_audio_active,"USB audio recovers after stream loss and resume");
+    attach(nil);test_audio_configured=0;test_audio_open_succeed=0;audio_test_controllers=nil;
+    method_setImplementation(method,original);
+}
 static void test_audio_ownership(void) {
     RumblePad *p=pad(1);attach(p);dm_rumble_mac_set_active(1);
     send_value(0,.5f,0,160,320);uint64_t now=clock_gettime_nsec_np(CLOCK_MONOTONIC);tick(now);
@@ -316,6 +351,6 @@ static void test_audio_ownership(void) {
     CHECK(test_audio_closed>0,"lost stream disposed");attach(nil);
 }
 int main(void) { @autoreleasepool {
-    test_gain_config();test_audio_gain_config();test_hid();test_concurrent_publication();test_split();test_xbox_response();test_output_gain();test_audio_ownership();test_shared_and_errors();
+    test_gain_config();test_audio_gain_config();test_hid();test_concurrent_publication();test_split();test_xbox_response();test_output_gain();test_audio_retry();test_audio_ownership();test_shared_and_errors();
     printf("RUMBLE_MAC checks=%d failed=%d\n",checks,failed);return failed!=0;
 } }
