@@ -839,21 +839,29 @@ static int g_pass_late_res; // a draw of the open pass reads memory in a stage a
 static uint64_t g_order_vbar;   // ordering barriers kept inside the pass as a vertex-to-vertex barrier (prog_swrites)
 static void img_fit_upgrade(void); static int g_imfit_npend;   // textures an image slot needs a format view of (img_fit), upgraded before the next draw pass opens
 static int g_last_end_relaxed, g_game_barrier;   // the last encoder ended was a draw pass with the relaxed end barrier (nothing else since); the game issued nvnCommandBufferBarrier since the last draw pass began
+static int g_pass_private, g_pass_overlap;
+enum { OVERLAP_ROOTS = 64 };
+static uint64_t g_overlap_roots[OVERLAP_ROOTS], g_pass_roots[10];
+static unsigned g_overlap_n, g_pass_nroots;
+static int g_overlap_checked;
+static uint64_t g_overlap_reg, g_overlap_ser, g_overlap_dirty;
+static int overlap_draw_safe(void);
+static uint64_t private_texture_root(id<MTLTexture> t);
 static uint64_t g_bar_skip, g_bar_full;            // draw passes begun without / with the consumer barrier (DM_NVN_BARRIER=game)
 static void gp_end(id e);
 static inline void m4_end(id e) {
     gp_end(e);
     MTL4VisibilityOptions vis = e == g_blit ? blit_vis() : resource_vis(); if (e == g_blit) g_blit_alias = 0;
     if ([e conformsToProtocol:@protocol(MTL4CommandEncoder)]) [(id<MTL4CommandEncoder>)e barrierAfterStages:MTLStageAll beforeQueueStages:MTLStageAll visibilityOptions:vis];
-    [e endEncoding]; g_last_end_relaxed = 0;
+    [e endEncoding]; g_last_end_relaxed = 0; g_overlap_n = 0;
 }
-// DM_NVN_BARRIER=game (default full): draw passes are ordered by the game's own barriers. A draw pass ends with a barrier from its vertex and fragment stages to the fragment, compute and copy stages of
+// Stage overlap (default on Mac, opt-in on iOS with DM_NVN_BARRIER=game): draw passes retain the game's own barriers. A private, shader-read-only pass ends with a barrier from its vertex and fragment stages to the fragment, compute and copy stages of
 // later work, so the next pass's vertex work can overlap this pass's fragments (with the full barriers every pass waited for the previous one to finish completely: about 350 passes a frame in Breath of
 // the Wild). The next draw pass adds the full consumer barrier when the game called nvnCommandBufferBarrier since the last one (NVN asks for one before results of rendering are read as textures, shader data or
-// indirect arguments), or when anything other than a draw pass ran in between (compute, copies and uploads keep their full barriers). Only vertex-stage reads of the previous pass's results without a barrier change order
+// indirect arguments), or when anything other than a draw pass ran in between. Dependent or unknown vertex texture reads, shader writes and non-private attachments also keep full ordering, including when a later draw of an overlapping pass introduces such a dependency. Known private vertex textures may overlap only when disjoint from every attachment written since the last full barrier.
 // DM_NVN_BARRIER=ab... alternates game and full with the DM_AB phases (measurement)
 static int sw_mode(const char *name, int dflt); static inline int sw_on(int m);
-static int barrier_game(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_BARRIER"); v = e && !strncmp(e, "ab", 2) ? sw_mode("DM_NVN_BARRIER", 0) : e && !strcmp(e, "game"); if (v == 1) MLOG("DM_NVN_BARRIER=game: draw passes are ordered by the game's own barriers (fragment work still has barriers between passes; vertex work may overlap the previous pass's fragments)"); } return sw_on(v); }
+static int barrier_game(void) { static int v = -1; if (v < 0) { const char *e = getenv("DM_NVN_BARRIER"); v = e && !strncmp(e, "ab", 2) ? sw_mode("DM_NVN_BARRIER", 0) : e ? !strcmp(e, "game") : !TARGET_OS_IPHONE; if (v == 1) MLOG("render pass ordering: independent read-only vertex work may overlap earlier fragments; shader writes, dependent/unknown vertex textures and non-private attachments keep full ordering (DM_NVN_BARRIER=full disables overlap)"); } return sw_on(v); }
 void mtl_barrier_stats(uint64_t *skip, uint64_t *full) { *skip = g_bar_skip; *full = g_bar_full; }
 uint64_t mtl_cut_count(void);
 // DM_NVN_GPUPROF=first frame[-last frame] (diagnostic): GPU time of every encoder of the main command buffers in those frames. A relaxed timestamp is written into a counter heap when an
@@ -931,13 +939,30 @@ static void gp_report(int n, gp_lab *lab, uint64_t frame) {   // the frame's las
 }
 static inline id<MTL4RenderCommandEncoder> enc_r_begin_pass(MTL4RenderPassDescriptor *d) {   // the draw passes (rp_begin_ex); see barrier_game
     id<MTL4RenderCommandEncoder> e = [g_cb renderCommandEncoderWithDescriptor:d];
-    if (g_last_end_relaxed && !g_game_barrier && barrier_game() && !g_image_heap_n) g_bar_skip++;
-    else { [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()]; g_bar_full++; }
+    g_pass_overlap = g_last_end_relaxed && !g_game_barrier && barrier_game() && !g_image_heap_n && overlap_draw_safe();
+    if (g_pass_overlap) g_bar_skip++;
+    else { [e barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageAll visibilityOptions:resource_vis()]; g_bar_full++; g_overlap_n = 0; }
+    // Private standalone attachments cannot alias vertex/uniform pool buffers.
+    // Keep full producer ordering for shared, linear, heap and imported storage.
+    g_pass_private = 1; g_pass_nroots = 0;
+    for (int i = 0; i < 10; i++) {
+        id<MTLTexture> t = i < 8 ? d.colorAttachments[i].texture : i == 8 ? d.depthAttachment.texture : d.stencilAttachment.texture;
+        if (!t) continue;
+        uint64_t root = private_texture_root(t);
+        if (!root) g_pass_private = 0;
+        else g_pass_roots[g_pass_nroots++] = root;
+    }
     g_game_barrier = 0;
     [e setArgumentTable:g_vt atStages:MTLRenderStageVertex]; [e setArgumentTable:g_ft atStages:MTLRenderStageFragment]; gp_begin(e, 'R', d); return e;
 }
 static inline void enc_r_end_pass(id e) {
-    if (!barrier_game() || g_image_heap_n) { m4_end(e); return; }
+    if (!barrier_game() || g_image_heap_n || !g_pass_private || g_pass_swrite) { m4_end(e); return; }
+    for (unsigned i = 0; i < g_pass_nroots; i++) {
+        unsigned j = 0; for (; j < g_overlap_n && g_overlap_roots[j] != g_pass_roots[i]; j++) {}
+        if (j < g_overlap_n) continue;
+        if (g_overlap_n == OVERLAP_ROOTS) { m4_end(e); return; }
+        g_overlap_roots[g_overlap_n++] = g_pass_roots[i];
+    }
     gp_end(e); [(id<MTL4CommandEncoder>)e barrierAfterStages:MTLStageVertex | MTLStageMesh | MTLStageFragment beforeQueueStages:MTLStageFragment | MTLStageDispatch | MTLStageBlit visibilityOptions:resource_vis()];
     [e endEncoding]; g_last_end_relaxed = 1;
 }
@@ -1044,6 +1069,15 @@ static id<MTL4ComputeCommandEncoder> blit(void) {
     if (g_blit_ops) blit_barrier();
     g_bw_lo[0] = 0; g_bw_hi[0] = ~0ull; g_bw_n = 1; g_br_n = 0; g_blit_ops = 1;   // record as "everything written": the next operation always gets a barrier
     return e;
+}
+
+// Only standalone private allocations prove independence by object identity.
+// Shared/linear/IOSurface, shareable and heap-backed textures retain the original ordering:
+// distinct texture objects can describe the same bytes in those cases.
+static uint64_t private_texture_root(id<MTLTexture> t) {
+    __unsafe_unretained id<MTLTexture> root = t;
+    while (root.parentTexture) root = root.parentTexture;
+    return root && root.storageMode == MTLStorageModePrivate && !root.buffer && !root.heap && !root.iosurface && !root.shareable ? root.gpuResourceID._impl : 0;
 }
 
 void mtl_sub_copy(uint64_t src, uint64_t dst, uint64_t n) {
@@ -4841,7 +4875,7 @@ static void bare_dims(NSUInteger *w, NSUInteger *h) {
 static int prog_swrites(NvProg *pr) {
     int w = 0;
     for (int st = 0; pr && st < 6; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh) continue;
-        for (int i = 0; i < sh->rf.nb; i++) if (sh->rf.b[i].rw && (sh->rf.b[i].kind == NVN_RB_IMG || sh->rf.b[i].kind == NVN_RB_SBUFP)) { w |= st == 0 ? 1 : st == 1 ? 2 : 4; break; } }
+        for (int i = 0; i < sh->rf.nb; i++) if ((sh->rf.b[i].rw || sh->rf.b[i].atom) && (sh->rf.b[i].kind == NVN_RB_IMG || sh->rf.b[i].kind == NVN_RB_SBUFP || sh->rf.b[i].kind == NVN_RB_SBUFU)) { w |= st == 0 ? 1 : st == 1 ? 2 : 4; break; } }
     return w;
 }
 static void order_note(NvProg *pr) {   // after each draw of the pass: does it read memory in a stage after the vertex stage (anything bound there but samplers and driver data)
@@ -6074,6 +6108,61 @@ static dispatch_queue_t pp_bg_queue(void) {
         for (int i = 0; i < n; i++) q[i] = dispatch_queue_create("dm.nvn.pso-bg", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0)); });
     return q[atomic_fetch_add(&rr, 1) % (unsigned)n];
 }
+// Keep the archived/specialized pipeline ready for the first draws. Frequently
+// used colour states get a fully compiled Metal 4 pipeline in the background:
+// the compiler can then remove unused fragment outputs and the specialization
+// jump (Apple, "Explore Metal 4 games", WWDC25, 22:16). Only the submit thread
+// owns this table and adopts results; workers publish through ready.
+@interface PsoOptimize : NSObject { @public id<MTLRenderPipelineState> ps; _Atomic int ready; unsigned uses; int started, adopted; } @end
+@implementation PsoOptimize @end
+static nvn_hmap g_pso_opt = {.klen = sizeof(pso_key)};
+enum { PSO_OPT_USES = 32 };
+static _Atomic int g_pso_opt_active;
+static _Atomic uint64_t g_pso_opt_built, g_pso_opt_failed;
+static uint64_t g_pso_opt_adopted;
+static dispatch_queue_t pso_opt_queue(void) {
+    static dispatch_queue_t q; static dispatch_once_t once;
+    dispatch_once(&once, ^{ q = dispatch_queue_create("dm.nvn.pso-opt", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_UTILITY, 0)); });
+    return q;
+}
+static id<MTLRenderPipelineState> pso_opt_take(const pso_key *k, PsoOptimize *job, id<MTLRenderPipelineState> current) {
+    if (!job->adopted && atomic_load_explicit(&job->ready, memory_order_acquire)) {
+        job->adopted = 1;
+        if (job->ps) {
+            // Recorded draws and earlier GPU submissions still use the old one.
+            defer_obj_unref(current); hm_put_id(&g_pso, k, job->ps); job->ps = nil; g_pso_opt_adopted++;
+            return hm_get_id(&g_pso, k);
+        }
+    }
+    return current;
+}
+// NOLINTBEGIN(clang-analyzer-osx.cocoa.RetainCount): hm_put_id's CFBridgingRetain owns optimization jobs, including while their asynchronous blocks run
+static id<MTLRenderPipelineState> pso_opt_use(const pso_key *k, NvShader *vs, NvShader *fs, id<MTLRenderPipelineState> current) {
+#if TARGET_OS_IPHONE
+    return current;   // macOS measurements first; keep the iOS compilation policy
+#else
+    if (!g_comp4 || !fs || k->fsfn) return current;   // no optimization of pulling stand-ins or diagnostic/merged fragments
+    PsoOptimize *job = hm_get_id(&g_pso_opt, k);
+    if (!job) { job = [PsoOptimize new]; hm_put_id(&g_pso_opt, k, job); }
+    if (job->started) return pso_opt_take(k, job, current);
+    if (++job->uses < PSO_OPT_USES) return current;
+    int idle = 0;
+    if (!atomic_compare_exchange_strong(&g_pso_opt_active, &idle, 1)) { job->uses = PSO_OPT_USES; return current; }
+    job->started = 1;
+    MTL4RenderPipelineDescriptor *d = pso_desc4(pso_desc(k, vs, fs, nil, 0), 0);
+    if (!d) { job->adopted = 1; atomic_store(&g_pso_opt_active, 0); return current; }
+    dispatch_async(pso_opt_queue(), ^{ @autoreleasepool {
+        NSError *e = nil;
+        job->ps = [g_comp4 newRenderPipelineStateWithDescriptor:d compilerTaskOptions:nil error:&e];
+        if (job->ps) atomic_fetch_add(&g_pso_opt_built, 1);
+        else { atomic_fetch_add(&g_pso_opt_failed, 1); MLOG("full-state pipeline optimization failed: %s (specialized pipeline retained)", e.localizedDescription.UTF8String); }
+        atomic_store_explicit(&job->ready, 1, memory_order_release);
+        atomic_store(&g_pso_opt_active, 0);
+    } });
+    return current;
+#endif
+}
+// NOLINTEND(clang-analyzer-osx.cocoa.RetainCount)
 // Draws that waited for their pipeline on the submit thread, by why no stand-in served them: 0 hybrid pipelines off, 1 merged pass or readable-tile fragment, 2 diagnostic fragment,
 // 3 no pulling entry (layer-writing or transform feedback vertex shader, or no pulling library), 4 pulling base not made yet; count and time (prediction walks left out)
 static uint64_t g_pw_n[5], g_pw_ns[5];
@@ -6186,6 +6275,12 @@ static __unsafe_unretained id<MTLRenderPipelineState> hybrid_get(const pso_key *
 void mtl_hybrid_stats(uint64_t *draws, uint64_t *made, uint64_t *none) { *draws = g_hy_draws; *made = g_hy_made; *none = g_hy_none; }
 // The pipeline time line of the timing summary (hle_nvn.c), the difference since the last call
 void mtl_pso_line(char *o, size_t n) {
+    static uint64_t optimized;
+    if (optimized != g_pso_opt_adopted) {
+        optimized = g_pso_opt_adopted;
+        MLOG("full-state pipelines: %llu adopted, %llu built, %llu failed, %d compilation active", (unsigned long long)optimized,
+             (unsigned long long)atomic_load(&g_pso_opt_built), (unsigned long long)atomic_load(&g_pso_opt_failed), atomic_load(&g_pso_opt_active));
+    }
     static uint64_t p[18]; uint64_t v[18] = {g_bp_pso_ns, g_bp_lib_ns, g_pt_hit_n, g_pt_hit_ns, g_pt_miss_n, g_pt_miss_ns, g_pb_spec, g_pt_spec_ns, g_pb_built, g_pt_comp_ns, g_pt_pred_n, g_pt_pred_ns, g_hy_draws, g_hy_made, g_pp_kicked, g_pp_done_n, g_pp_stolen, g_hy_none};
     uint64_t d[18]; for (int i = 0; i < 18; i++) d[i] = v[i] - p[i];
     snprintf(o, n, "on the submit thread pipelines %.1f ms, shader libraries %.1f ms, predictions %llu / %.1f ms; all threads: archive lookups found %llu / %.1f ms, found none %llu / %.1f ms, "
@@ -6446,7 +6541,7 @@ static __unsafe_unretained id<MTLRenderPipelineState> pso_get_(NvProg *pr, MTLRe
     { static int all = -1; if (all < 0) { const char *ev = getenv("DM_PSO_PULL_ALL"); all = ev && !strcmp(ev, "1"); if (all) MLOG("DM_PSO_PULL_ALL=1: every draw with a pulling pipeline draws with it (diagnostic)"); }
       if (all && !g_pso_lmap && !ms_fn && hybrid_on()) { __unsafe_unretained id<MTLRenderPipelineState> h = hybrid_get(&k, vs, fs); if (h) { g_pso_pull = 1; return h; } } }
     __unsafe_unretained id<MTLRenderPipelineState> cached = hm_get_id(&g_pso, &k);
-    if (cached) return cached;
+    if (cached) return pso_opt_use(&k, vs, fs, cached);
     if (hm_get_id(&g_pso_fail, &k)) return nil;
     id<MTLRenderPipelineState> ps = nil; int took = 0;
     NSError *e = nil; uint64_t bt = bp_now(), pred0 = g_pt_pred_ns;
@@ -8896,16 +8991,26 @@ static int fb_mode(void) {
 }
 static inline void fb_pass_sync(void) { uint64_t p = g_stat_pass + !g_enc; if (p != g_fb_pass) { g_fb_pass = p; g_fb_wmask = g_fb_rmask = 0; } }
 // The snapshot of an attachment's level and layer: the cached one (valid: *fresh = 0) or a texture to copy into (*fresh = 1; the entry is then valid from this barrier and submission on)
-static fb_cache_t *fb_snap(uint64_t ser, int lv, int sl, MTLPixelFormat pf, NSUInteger w, NSUInteger h, int force, int *fresh) {
+static fb_cache_t *fb_snap(uint64_t ser, int lv, int sl, MTLPixelFormat pf, NSUInteger w, NSUInteger h, int needs_view, int force, int *fresh) {
     fb_cache_t *e = NULL;
     for (int i = 0; i < 8 && !e; i++) if (g_fbc[i].snap && g_fbc[i].ser == ser && g_fbc[i].lv == lv && g_fbc[i].sl == sl) e = &g_fbc[i];
-    if (e && (e->snap.pixelFormat != pf || e->snap.width != w || e->snap.height != h)) { defer_obj_release(e->snap); e->snap = nil; }
-    if (e && e->snap && !force && e->bar == g_fb_bar && e->sub == g_sub_serial) { *fresh = 0; return e; }
-    if (!e) { e = &g_fbc[g_fbc_next]; g_fbc_next = (g_fbc_next + 1) & 7;
-        if (e->snap && (e->snap.pixelFormat != pf || e->snap.width != w || e->snap.height != h)) { defer_obj_release(e->snap); e->snap = nil; } }
-    if (!e->snap) { MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:pf width:w height:h mipmapped:NO];
-        d.usage = MTLTextureUsageShaderRead | MTLTextureUsagePixelFormatView; d.storageMode = MTLStorageModePrivate;
-        e->snap = [g_dev newTextureWithDescriptor:d]; if (!e->snap) { e->ser = 0; return NULL; } res_add(e->snap); }   // full queue barriers separate a copy from the draws that read the earlier content
+    if (!e) { e = &g_fbc[g_fbc_next]; g_fbc_next = (g_fbc_next + 1) & 7; }
+    int shape = e->snap && e->snap.pixelFormat == pf && e->snap.width == w && e->snap.height == h;
+    int reuse = shape && !force && e->ser == ser && e->lv == lv && e->sl == sl && e->bar == g_fb_bar && e->sub == g_sub_serial;
+    // PixelFormatView restricts texture optimizations on Apple GPUs. Most feedback
+    // reads need no view; grant it only for a different format or channel mapping.
+    if (!shape || (needs_view && !(e->snap.usage & MTLTextureUsagePixelFormatView))) {
+        MTLTextureDescriptor *d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:pf width:w height:h mipmapped:NO];
+        d.usage = MTLTextureUsageShaderRead | (needs_view ? MTLTextureUsagePixelFormatView : 0); d.storageMode = MTLStorageModePrivate;
+        id<MTLTexture> next = [g_dev newTextureWithDescriptor:d]; if (!next) return NULL;
+        res_add(next);
+        // A later view may need this permission before another game barrier.
+        // Preserve the cached snapshot, not the attachment's newer contents.
+        if (reuse) enc_b_copy_texture(blit(), e->snap, 0, 0, MTLOriginMake(0, 0, 0), MTLSizeMake(w, h, 1), next, 0, 0, MTLOriginMake(0, 0, 0));
+        if (e->snap) defer_obj_release(e->snap);
+        e->snap = next;
+    }
+    if (reuse) { *fresh = 0; return e; }
     e->ser = ser; e->lv = lv; e->sl = sl; e->bar = g_fb_bar; e->sub = g_sub_serial; *fresh = 1; return e;
 }
 // Called before the draw opens its render pass: if a snapshot is needed, end the current render pass, copy the snapshot (or reuse a valid one) and register the substitution (used by this draw's argument encoding)
@@ -8920,11 +9025,16 @@ static void fb_prepare(NvProg *pr) {
     if (g_enc && (wm & g_fb_rmask)) { g_fb_split++; rp_end(); fb_pass_sync(); }   // an earlier draw of this pass read an attachment this one writes: it must not see these writes
     for (int i = 0; i < fs->rf.nb && g_fb_n < 4; i++) { const nvn_rbind *b = &fs->rf.b[i]; if (b->kind != NVN_RB_TEX || b->reg >= NTEX) continue;
         int tid = (int)(tex_slot_h(S.tex[1], S.img[1], b->reg) & 0xfffff); if (!tid) continue;
-        os_unfair_lock_lock(&g_rmu); uint64_t ser = tid < g_ntreg && g_treg[tid].ok ? g_treg[tid].t.serial : 0; os_unfair_lock_unlock(&g_rmu);
+        // Most sampled textures are not attachments. The published serial table
+        // also serves the pass dependency checks (h_ser); resolve a Metal view
+        // under the registry lock only after that serial matches an attachment.
+        uint64_t ser = h_ser((uint64_t)tid);
         if (!ser) continue;
         for (int k = 0; k < R.rt.n && k < 8 && g_fb_n < 4; k++) { if (!R.rt.color[k] || R.rt.color[k]->serial != ser) continue;
             uint64_t aser; int lv, sl; rt_sub(&R.rt, k, &aser, &lv, &sl);
-            os_unfair_lock_lock(&g_rmu); void *tv = NULL; tex_fast_rid(tid, &tv); id<MTLTexture> t = (__bridge id<MTLTexture>)tv; os_unfair_lock_unlock(&g_rmu);
+            os_unfair_lock_lock(&g_rmu); void *tv = NULL;
+            if (tid < g_ntreg && g_treg[tid].ok && g_treg[tid].t.serial == ser) tex_fast_rid(tid, &tv);
+            id<MTLTexture> t = (__bridge id<MTLTexture>)tv; os_unfair_lock_unlock(&g_rmu);
             if (!t) continue;
             int dup = 0; for (int q = 0; q < g_fb_n; q++) dup |= g_fb_src[q] == t; if (dup) continue;
             id<MTLTexture> base = t.parentTexture ? t.parentTexture : t; NSUInteger tl = t.parentTexture ? t.parentRelativeLevel : 0, ts = t.parentTexture ? t.parentRelativeSlice : 0;
@@ -8938,16 +9048,16 @@ static void fb_prepare(NvProg *pr) {
             if (t.textureType != MTLTextureType2D || t.sampleCount != 1 || ts != (NSUInteger)sl || b->dtt != MTLTextureType2D || base.parentTexture) {
                 RED_ONCE(80, "同通道反馈采样：采样视图不是附件那一级那一层的单级二维视图（类型 %lu 级 %lu+%lu 层 %lu，附件 级 %d 层 %d，着色器 %s），照旧", (unsigned long)t.textureType, (unsigned long)tl, (unsigned long)t.mipmapLevelCount, (unsigned long)ts, lv, sl, fs->key);
                 continue; }
+            MTLTextureSwizzleChannels sw = t.swizzle;
+            int same = t.pixelFormat == base.pixelFormat && sw.red == MTLTextureSwizzleRed && sw.green == MTLTextureSwizzleGreen && sw.blue == MTLTextureSwizzleBlue && sw.alpha == MTLTextureSwizzleAlpha;
             NSUInteger w = MAX(base.width >> lv, 1ul), h = MAX(base.height >> lv, 1ul); int fresh;
-            fb_cache_t *e = fb_snap(ser, lv, sl, base.pixelFormat, w, h, g_fb_mode == 2, &fresh); if (!e) continue;
+            fb_cache_t *e = fb_snap(ser, lv, sl, base.pixelFormat, w, h, !same, g_fb_mode == 2, &fresh); if (!e) continue;
             id<MTLTexture> snap = e->snap;
             if (fresh) {
                 if (g_enc) rp_end();
                 id<MTL4ComputeCommandEncoder> be = blit(); enc_b_copy_texture(be, base, (NSUInteger)sl, (NSUInteger)lv, MTLOriginMake(0, 0, 0), MTLSizeMake(w, h, 1), snap, 0, 0, MTLOriginMake(0, 0, 0));
             } else if (g_enc && (g_fb_rmask >> k & 1)) rp_end();   // an earlier draw of this pass read the attachment directly: it must not see this pass's writes
             if (!g_enc) fb_pass_sync();
-            MTLTextureSwizzleChannels sw = t.swizzle;
-            int same = t.pixelFormat == snap.pixelFormat && sw.red == MTLTextureSwizzleRed && sw.green == MTLTextureSwizzleGreen && sw.blue == MTLTextureSwizzleBlue && sw.alpha == MTLTextureSwizzleAlpha;
             id<MTLTexture> use = same ? snap : [snap newTextureViewWithPixelFormat:t.pixelFormat textureType:MTLTextureType2D levels:NSMakeRange(0, 1) slices:NSMakeRange(0, 1) swizzle:sw];
             if (!use) { RED_ONCE(81, "同通道反馈采样：快照视图建不出（格式 %lu），照旧", (unsigned long)t.pixelFormat); continue; }
             if (g_fb_use[g_fb_n] && g_fb_use[g_fb_n] != use) defer_obj_unref(g_fb_use[g_fb_n]);
@@ -9476,6 +9586,47 @@ static void cs_hoist_try(NvProg *pr0, const p_draw *dw0, const p_draw_idx *di0) 
 void mtl_geomesh_stats(uint64_t *n, uint64_t *wait) { *n = g_geo_mesh_n; *wait = g_geo_mesh_wait; }
 void mtl_geohoist_stats(uint64_t *moved, uint64_t *runs, uint64_t *stops) { *moved = g_geo_hoisted; *runs = g_geo_hoist_runs; memset(stops, 0, 6 * sizeof *stops); stops[3] = g_geo_dependency_splits; }
 void mtl_cshoist_stats(uint64_t *moved, uint64_t *depth, uint64_t *stops) { *moved = g_csh_moved; *depth = g_csh_depth; for (int i = 0; i < 8; i++) stops[i] = g_csh_stop[i]; }
+// With private attachments and no shader writes, previous render passes can
+// only modify texture storage. A vertex stage reading constants/pool buffers
+// cannot observe those writes. Known texture reads must be disjoint from all
+// attachments written since the last full barrier. Unknown inputs retain full
+// ordering, as do new shader writes (WAR against an older pass's reads).
+static int overlap_draw_safe(void) {
+    g_overlap_checked = 0;
+    if ((!g_fd_dw && !g_fd_di && !g_enc) || g_geo_program || S.tf_on || S.rast_discard) return 0;
+    __unsafe_unretained NvProg *pr = S.prog ? prog_get(S.prog) : nil;
+    if (!pr || !pr->sh[0] || pr->sh[2] || pr->sh[3] || pr->sh[4]) return 0;
+    for (int st = 0; st < 2; st++) { __unsafe_unretained NvShader *sh = pr->sh[st]; if (!sh) continue;
+        for (int i = 0; i < sh->rf.nb; i++) if (sh->rf.b[i].rw || sh->rf.b[i].atom) return 0;
+    }
+    __unsafe_unretained NvShader *vs = pr->sh[0];
+    if (vs->rf.bindless || vs->rf.dyn) return 0;
+    uint64_t reg_gen = g_reg_gen, ser_gen = g_ser_gen, dirty = nvn_dirty_now();
+    for (int i = 0; i < vs->rf.nb; i++) switch (vs->rf.b[i].kind) {
+        case NVN_RB_CBUF: case NVN_RB_UBOP: case NVN_RB_C1: case NVN_RB_SUPPORT: case NVN_RB_DRV0: case NVN_RB_DRV2: break;
+        case NVN_RB_SAMP: case NVN_RB_SAMPT: case NVN_RB_SAMPI: case NVN_RB_SAMPU: case NVN_RB_SAMPD: case NVN_RB_SAMPA: case NVN_RB_SAMPP: case NVN_RB_BORDER: break;
+        case NVN_RB_TEX: {
+            g_overlap_checked = 1;
+            unsigned reg = vs->rf.b[i].reg; if (reg >= NTEX) return 0;
+            int tid = (int)(tex_slot_h(S.tex[0], S.img[0], reg) & 0xfffff); if (!tid) break;
+            // Never resolve/upload a texture here: a new render encoder may
+            // already exist. An uncached or stale view takes full ordering.
+            os_unfair_lock_lock(&g_rmu); uint64_t root = 0;
+            if (tid < g_ntreg) { treg_t *r = &g_treg[tid];
+                if (r->ok && r->view && r->view_ser == g_ser_gen && (!r->view_pkg || r->view_dirty == nvn_dirty_now())) root = private_texture_root((__bridge id<MTLTexture>)r->view);
+            }
+            os_unfair_lock_unlock(&g_rmu); if (!root) return 0;
+            for (unsigned j = 0; j < g_overlap_n; j++) if (g_overlap_roots[j] == root) return 0;
+            break;
+        }
+        default: return 0;
+    }
+    if (g_overlap_checked) {
+        if (reg_gen != g_reg_gen || ser_gen != g_ser_gen || dirty != nvn_dirty_now()) return 0;
+        g_overlap_reg = reg_gen; g_overlap_ser = ser_gen; g_overlap_dirty = dirty;
+    }
+    return 1;
+}
 static void draw_(const p_draw *dw, const p_draw_idx *di);
 static void draw(const p_draw *dw, const p_draw_idx *di) { cp_stamp start = cp_begin(); draw_(dw, di); cp_end(5, start); }
 static void draw_(const p_draw *dw, const p_draw_idx *di) {
@@ -9500,6 +9651,7 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
     g_mdxc.next = NULL;
     if (!S.prog) { RED_ONCE(18, "no program bound before the draw"); PD("Z %llu draw skipped: no program bound", g_stat_pass + !g_enc); return; }
     __unsafe_unretained NvProg *pr = g_geo_program ? g_geo_program : prog_get(S.prog);
+    if (g_enc && g_pass_overlap && !overlap_draw_safe()) rp_end();   // a later draw introduces a vertex dependency or shader write
     image_prepare(pr, 0x1f);
     draw_gs_check(pr);   // a geometry stage left with no function (see prog_fold_gs)
     if (!g_geo_program && S.rast_discard && S.tf_on) { tf_draw(pr, dw, di); return; }
@@ -9656,6 +9808,9 @@ static void draw_(const p_draw *dw, const p_draw_idx *di) {
         static int again; if (again) { RED_ONCE(130, "binding a draw's arguments ended its render pass twice; draw skipped"); return; }
         PD("M %llu binding the draw's arguments ended the render pass (texture upgrade); encoded again", g_stat_pass);
         again = 1; draw(dw, di); again = 0; return;
+    }
+    if (g_pass_overlap && g_overlap_checked && (g_overlap_reg != g_reg_gen || g_overlap_ser != g_ser_gen || g_overlap_dirty != nvn_dirty_now())) {
+        rp_end(); draw(dw, di); return;   // a texture resolved to another allocation after the overlap proof
     }
     // Parameter binding captures the actual resources under the registry lock; if the version changed between the eligibility check and the binding, split and retry before any GPU draw.
     if (g_rt_range_active && (g_pass.reg_gen != g_reg_gen || g_pass.ser_gen != g_ser_gen || g_pass.range_dirty != nvn_dirty_now())) { rp_end(); draw(dw, di); return; }

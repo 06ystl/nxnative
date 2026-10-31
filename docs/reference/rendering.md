@@ -429,6 +429,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
   - [Paper Mario: The Origami King](../../dm/games/0100A3900C3E2000/README.md#rendering): magenta 16×16 blocks on the Mac (Apple M6) from its anti-aliasing pass `8dc20835c07cd7ff` (`shaders/aa.bfsha`) on the 1920×1080 RGB10A2 scene, the only shader `DM_NVN_FB_SNAP=all` snapshotted; about one block a frame at Peach's castle before, none with it listed.
 - **Note:** the cost. Breath of the Wild's G-buffer decals write and sample their own targets (`4d3d5a4408c2e8d9`, `753d0169ae3ce4f0` and others on the 1600×900 G-buffer), about 460 such draws a frame outdoors on the Great Plateau; a fresh snapshot for each (`DM_NVN_FB_SNAP=all`) takes the Mac's GPU time from about 4 to 28 ms a frame (frame time 16.6 → 36.6 ms before). Between the game's barriers they need about ten snapshots a frame, and about 50 draws reuse each: GPU time p50 3.5–4.1 ms with `DM_NVN_FB_SNAP=0` and 3.7–4.5 ms with the rule over four runs each (2026-10-30, Apple M6, the outdoor save looking around, frames 4,800–6,900; the frame time stays at its 30 fps budget). The decals had shown no blocks on the iPhone; the snapshot makes them read what the Switch guarantees rather than what the tile happened to hold. `DM_NVN_FB_SNAP=all` with a screenshot detector shows whether blocks come from such a draw at all, and a pass dump (`N … same-pass feedback sampling` lines after the draw's `K` keys) names the shaders.
 
+### Feedback snapshots request format views only when needed
+
+- **Symptom:** ordinary same-format feedback snapshots request `PixelFormatView`, although they are only copied into and sampled.
+- **Cause:** `fb_snap` allocated every snapshot with the format-view usage. This restricts the driver's texture optimizations even when the sampled format and channel mapping match the attachment.
+- **Fix:** create ordinary snapshots with private storage and `ShaderRead` usage, leaving the default lossless compression policy. Request `PixelFormatView` only for a sampled format or channel mapping that needs a view. If a still-valid cached snapshot later needs that permission, copy the cached snapshot into the replacement allocation and retain its barrier/submission epoch; copying the attachment again could expose newer pixels to the draw.
+- **Checks:** `t_feedback` checks ordinary usage, permission upgrades retaining pre-overwrite red pixels, four simultaneous private snapshots, and slot substitution/barrier reuse in both encoding modes with Metal validation. Narrower usage alone gave no repeatable FPS gain in the matched 1440p workload; it makes no bandwidth-saving claim. The binding scan also prefilters non-attachment serials through the published atomic table, resolving matching views under the registry lock and rechecking their serials.
+- **Found on:** the native 1440p performance investigation of [Breath of the Wild](../../dm/games/01007EF00011E000/README.md#mac-1440p-pipeline-and-stage-optimization).
+
 ### Lower-left window origin
 
 - **Symptom:** text a game renders into textures for the title and the menus comes out upside down, while the scene looks right.
@@ -758,6 +766,14 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 
 ## Uniforms, copies and ordering
 
+### Independent vertex work overlaps earlier fragment work
+
+- **Symptom:** hundreds of render passes per frame wait for all stages of each previous pass, even when their vertex work reads none of its outputs.
+- **Cause:** full producer and consumer barriers serialize vertex and fragment execution across passes. Metal 4 permits stage-specific ordering ([Explore Metal 4 games, 12:26](https://developer.apple.com/videos/play/wwdc2025/254/?time=746)), but removing barriers without checking dependencies can expose stale vertex texture reads or reorder shader writes.
+- **Fix:** Mac draw passes allow read-only vertex work to overlap earlier fragments only after proving independence. Every producer attachment must be a standalone private texture, excluding buffer, heap, IOSurface and shareable storage. The host tracks the root allocations of all attachments written since the last full barrier. Direct vertex texture bindings need current cached views disjoint from that history; unknown, stale, dynamic and bindless resources keep full ordering. Shader writes (including uniform-addressed storage and image atomics), geometry/feedback, explicit game barriers and intervening compute/copy work also retain full ordering. Fragment, compute and copy consumers remain ordered after prior vertex and fragment work. A later draw introducing a dependency ends and reopens the pass; resource-generation changes during argument binding require a new proof before drawing. Bounded-history exhaustion takes the full barrier. iOS keeps its previous full-barrier default; `DM_NVN_BARRIER=full` selects full ordering on Mac too.
+- **Check:** `check_t_perf_order` compares literal red pixels through the production replay: independent private passes and unrelated cached vertex textures may overlap; explicit barriers, shared attachments and shader writes must not. A later vertex read through a swizzled view must reopen the pass. Runs cover direct/deferred encoding, disabled hoists/merges and full barriers, under Metal validation.
+- **Found on:** [Breath of the Wild's native 1440p workload](../../dm/games/01007EF00011E000/README.md#mac-1440p-pipeline-and-stage-optimization). Other games and iOS gameplay remain unchecked.
+
 ### Depth plane copies between depth formats
 
 - **Symptom:** `[RED] texture→texture copy case not implemented: 1920x1080x1→1920x1080x1 flags 0 format 260→252 3D 0→0`.
@@ -775,7 +791,7 @@ The replay on Metal (`dm/gfx/nvn/nvn_mtl.m`) and the Vulkan and OpenGL layers. E
 
 - **Symptom:** tall blue / textured panels that flickered frame to frame: the fountain's vertex shader pushed the water surface to the top of the screen.
 - **Cause:** the host batches consecutive copies, fills and inline uniform updates (`UpdateUniformBuffer`) into one compute encoder, and Metal 4 does not order operations inside one encoder. Mario writes the same uniform slot twice in a row each frame (4 bytes of −1, then 16 bytes of wave coefficients); without an intra-encoder barrier the writes occasionally landed in reverse order, the fountain's GPU wave simulation (a 512×1 RGBA16F texture updated by render → copy back → splash pass every frame) ran with −1 as its self coefficient and diverged to ±65504.
-- **Fix:** `blit_buf` now inserts `barrierAfterEncoderStages` when an operation reads or writes a guest range an earlier operation in the same encoder wrote; texture copies always get one. Render passes have their own encoder with full barriers, so they were not affected; compute dispatches share the copy encoder and always get a barrier, as texture copies do (Hyrule Warriors: Age of Calamity, [Compute dispatches share the copy encoder](#compute-dispatches-share-the-copy-encoder)).
+- **Fix:** `blit_buf` inserts `barrierAfterEncoderStages` when an operation reads or writes a guest range an earlier operation in the same encoder wrote, or writes a range it read. Texture operations order with all preceding operations. Render passes have their own encoder with full barriers, so they were not affected; compute dispatches share the copy encoder and order with all preceding operations (Hyrule Warriors: Age of Calamity, [Compute dispatches share the copy encoder](#compute-dispatches-share-the-copy-encoder)).
 - **Check:** `DM_NVN_BLIT_ORDER=0` turns the barriers off to reproduce.
 - **Found on:** [Super Mario Bros. Wonder](../../dm/games/010015100B514000/README.md).
 

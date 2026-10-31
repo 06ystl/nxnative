@@ -297,6 +297,52 @@ static void posts(void) {
     post_complete(f+1,0,0); post_complete(f+2,0,0);
     CHECK("callbacks never repeat an event",event==15);
 }
+// NOLINTBEGIN(clang-analyzer-osx.cocoa.RetainCount): make_program installs its NvProg in the serial table; mtl_prog_release below removes those retained entries
+static void render_overlap(id<MTLLibrary> lib) {
+    prog_t pg={0}, dep={0}, writer={0}; make_program(lib,&pg,"red");
+    __unsafe_unretained NvProg *reader=make_program(lib,&dep,"red"), *writes=make_program(lib,&writer,"red");   // the serial table owns both programs
+    reader->sh[0]->fn=[lib newFunctionWithName:@"vt"];
+    reader->sh[0]->ae=[reader->sh[0]->fn newArgumentEncoderWithBufferIndex:0]; reader->sh[0]->arg_len=reader->sh[0]->ae.encodedLength;
+    reader->sh[0]->rf.nb=1; reader->sh[0]->rf.b[0]=(nvn_rbind){.kind=NVN_RB_TEX,.reg=0,.aid=0,.dtt=MTLTextureType2D};
+    // Reflection that permits a write must retain ordering even if this draw's
+    // particular control flow never reaches the store.
+    writes->sh[0]->rf.nb=1; writes->sh[0]->rf.b[0]=(nvn_rbind){.kind=NVN_RB_SBUFU,.rw=1};
+    uint32_t all=~0u;
+    for(int mode=0;mode<6;mode++) {
+        tex_t source=texture(NVN_TEXTURE_TARGET_2D,NVN_FORMAT_RGBA8,1), output=texture(NVN_TEXTURE_TARGET_2D,NVN_FORMAT_RGBA8,1);
+        mtl_tex_init(&source); mtl_tex_init(&output);
+        tex_t separate={0};
+        if(mode==5) { separate=texture(NVN_TEXTURE_TARGET_2D,NVN_FORMAT_RGBA8,1); mtl_tex_init(&separate); chain prime={0}; rt(&prime,&separate,-1,NULL); bind(&prime,&pg,3); triangle(&prime); execute(&prime); }
+        if(mode==4) { MTLTextureDescriptor *d=tex_desc(&source,0); d.storageMode=MTLStorageModeShared; id<MTLTexture> t=[g_dev newTextureWithDescriptor:d]; res_add(t); serial_put(source.serial,t); }
+        view_t view={.set_swizzle=1,.swz={NVN_TEXTURE_SWIZZLE_R,NVN_TEXTURE_SWIZZLE_G,NVN_TEXTURE_SWIZZLE_B,NVN_TEXTURE_SWIZZLE_ONE}};
+        mtl_reg_tex(599,mode==5?&separate:&source,mode==2?&view:NULL);
+        if(mode==2 || mode==5) { mtl_sub_begin(); (void)tex_mtl(&source); (void)tex_mtl(&output); os_unfair_lock_lock(&g_rmu); (void)tex_by_id(599); os_unfair_lock_unlock(&g_rmu); mtl_wait(mtl_sub_commit(),2000000000ull); }
+        chain c={0}; emit(&c,OP_BARRIER,&all,sizeof all); rt(&c,&source,-1,NULL); bind(&c,mode==3?&writer:&pg,3); triangle(&c);
+        if(mode==1) emit(&c,OP_BARRIER,&all,sizeof all);
+        rt(&c,&output,-1,NULL); bind(&c,mode==5?&dep:&pg,3);
+        if(mode==5) { p_bind_handles b={.stage=0,.first=0,.n=1,.h={599}}; emit(&c,OP_BIND_TEX,&b,sizeof b); }
+        triangle(&c);
+        if(mode==2) {   // an initially independent pass acquires a vertex texture dependency later
+            bind(&c,&dep,3); p_bind_handles b={.stage=0,.first=0,.n=1,.h={599}}; emit(&c,OP_BIND_TEX,&b,sizeof b); triangle(&c);
+        }
+        uint64_t skipped=g_bar_skip, full=g_bar_full; execute(&c);
+        CHECK(mode==0?"independent private render passes overlap":mode==1?"explicit game barrier retains full ordering":mode==2?"independent prefix overlaps before a later dependency":mode==3?"shader write retains full producer ordering":mode==4?"shared attachment retains full producer ordering":"unrelated cached vertex texture permits overlap",
+              g_bar_skip-skipped==(barrier_game() && (mode==0 || mode==2 || mode==5)));
+        if(mode==2) CHECK("late vertex texture dependency reopens with a full consumer barrier",g_bar_full-full>=2);
+        id<MTLBuffer> out=[g_dev newBufferWithLength:256 options:MTLResourceStorageModeShared];
+        CHECK("readback buffer exists",out!=nil); if(!out) return;
+        id<MTLCommandBuffer> cb=[g_q commandBuffer]; id<MTLBlitCommandEncoder> blit=[cb blitCommandEncoder];
+        id<MTLTexture> rendered=tex_mtl(&output); CHECK("readback target exists",rendered!=nil); if(!rendered) return;
+        [blit copyFromTexture:rendered sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0) sourceSize:MTLSizeMake(8,8,1) toBuffer:out destinationOffset:0 destinationBytesPerRow:32 destinationBytesPerImage:256];
+        [blit endEncoding]; [cb commit]; [cb waitUntilCompleted]; int bad=0;
+        for(int i=0;i<64;i++) bad+=memcmp((uint8_t *)out.contents+i*4,(uint8_t[]){255,0,0,255},4)!=0;
+        CHECK("overlap and dependency cases preserve literal red pixels",!bad && cb.status==MTLCommandBufferStatusCompleted);
+        mtl_reg_tex(599,NULL,NULL); mtl_tex_release(&source); mtl_tex_release(&output);
+        if(mode==5) mtl_tex_release(&separate);
+    }
+    mtl_prog_release(&pg); mtl_prog_release(&dep); mtl_prog_release(&writer);
+}
+// NOLINTEND(clang-analyzer-osx.cocoa.RetainCount)
 int main(int argc, char **argv) { @autoreleasepool {
     if(argc==2 && !strcmp(argv[1],"--cpu")) {
         alarm(10); setbuf(stdout,NULL); wait_budgets(); posts();
@@ -306,10 +352,12 @@ int main(int argc, char **argv) { @autoreleasepool {
     NSError *error=nil;
     id<MTLLibrary> lib=[g_dev newLibraryWithSource:@"#include <metal_stdlib>\nusing namespace metal;\n"
         "vertex float4 v(uint i [[vertex_id]]) { float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)}; return float4(p[i],0,1); }\n"
+        "struct VArgs {texture2d<float,access::read> t[[id(0)]];};\n"
+        "vertex float4 vt(uint i[[vertex_id]],constant VArgs &a[[buffer(0)]]) { float2 p[3]={float2(-1,-1),float2(3,-1),float2(-1,3)}; return float4(p[i]*a.t.read(uint2(0)).r,0,1); }\n"
         "fragment float4 red() { return float4(1,0,0,1); }\n"
         "struct Args { device uint *p [[id(0)]]; };\n"
         "kernel void compute_one(constant Args &a [[buffer(0)]]) { *a.p=73; }\n" options:nil error:&error];
     if(!lib) { fprintf(stderr,"%s\n",error.localizedDescription.UTF8String); return 2; }
-    slices(lib); hoists(lib); posts();
+    slices(lib); hoists(lib); render_overlap(lib); posts();
     printf("performance ordering: %d checks, %d failed\n",checks,failed); return failed!=0;
 } }

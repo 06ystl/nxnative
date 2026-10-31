@@ -9,16 +9,17 @@ uint64_t now_ns(void) { return bp_now(); }
 static int checks, failed;
 #define CHECK(c, label) do { checks++; if (!(c)) { failed++; fprintf(stderr, "FAIL: %s\n", label); } } while (0)
 
-static id<MTLTexture> target(tex_t *t, uint64_t serial) {
+static id<MTLTexture> target_storage(tex_t *t, uint64_t serial, MTLStorageMode storage) {
     *t = (tex_t){.magic=MAGIC('T','E','X',0), .serial=serial};
     t->d = (nvn_texdesc){.target=NVN_TEXTURE_TARGET_2D, .format=NVN_FORMAT_RGBA8,
         .width=4, .height=4, .depth=1, .levels=1, .samples=1};
-    MTLTextureDescriptor *d = tex_desc(t, 0); d.storageMode = MTLStorageModeShared;
+    MTLTextureDescriptor *d = tex_desc(t, 0); d.storageMode = storage;
     id<MTLTexture> texture = [g_dev newTextureWithDescriptor:d];
     CHECK(texture != nil, "render target created");
     res_add(texture); mtl_tex_init(t); serial_put(serial, texture);
     return texture;
 }
+static id<MTLTexture> target(tex_t *t, uint64_t serial) { return target_storage(t, serial, MTLStorageModeShared); }
 static void clear(MTLClearColor color) {
     R.clear_c[0] = 1; R.cc[0] = color;
     CHECK(rp_begin() != nil, "production render pass opens");
@@ -56,6 +57,7 @@ static void slot_case(NvProg *pr, id<MTLRenderPipelineState> pipeline, int slot,
     CHECK(g_fb_n == 1, "feedback attachment receives a snapshot");
     CHECK(g_fb_n == 1 && g_fb_src[0] == original && g_fb_use[0] != original,
           "snapshot substitutes a distinct texture for the registered source");
+    CHECK(!(g_fb_use[0].usage & MTLTextureUsagePixelFormatView),"ordinary snapshot keeps compression-compatible usage");
     rp_end();
     // Overwrite the attachment after the snapshot, then render the sampled value
     // into a distinct target. This makes a missing snapshot fail deterministically
@@ -81,6 +83,30 @@ static void slot_case(NvProg *pr, id<MTLRenderPipelineState> pipeline, int slot,
     printf("feedback slot %d: %s\n", slot, before == failed ? "PASS" : "FAIL");
     mtl_tex_release(&source); mtl_tex_release(&output);
 }
+// Simultaneous private snapshots retain each attachment's pre-overwrite pixels.
+static void private_case(NvProg *pr) {
+    NvShader *fs = pr->sh[1]; tex_t sources[4];
+    const uint8_t want[4][4] = {{255,0,0,255},{0,255,0,255},{0,0,255,255},{255,255,0,255}};
+    for (int i=0;i<4;i++) { target_storage(&sources[i],99810+i,MTLStorageModePrivate); mtl_reg_tex(700+i,&sources[i],NULL); }
+    id<MTLBuffer> result=[g_dev newBufferWithLength:4096 options:MTLResourceStorageModeShared]; res_add(result);
+    state_reset();memset(&R,0,sizeof R);mtl_sub_begin();R.has_rt=1;R.rt.n=4;fs->rf.nb=4;
+    for (int i=0;i<4;i++) {
+        R.rt.color[i]=&sources[i];R.clear_c[i]=1;R.cc[i]=MTLClearColorMake(want[i][0]/255.,want[i][1]/255.,want[i][2]/255.,1);
+        S.tex[1][i]=700+i;fs->rf.b[i]=(nvn_rbind){.kind=NVN_RB_TEX,.reg=i,.aid=i,.dtt=MTLTextureType2D};
+    }
+    CHECK(rp_begin()!=nil,"four private attachments clear together");
+    fb_prepare(pr);
+    CHECK(g_fb_n==4,"each G-buffer attachment has a snapshot");
+    for (int i=0;i<4;i++) { R.clear_c[i]=1;R.cc[i]=MTLClearColorMake(0,0,0,1); }
+    CHECK(rp_begin()!=nil,"original attachments overwritten after snapshots");rp_end();
+    for (int i=0;i<4;i++)readback(g_fb_use[i],result,i*1024);
+    CHECK(mtl_wait(mtl_sub_commit(),5000000000ull),"private snapshot submission completes");
+    CHECK(!mtl_last_commit_error(),"private snapshot submission has no GPU error");
+    for (int i=0;i<4;i++)pixels(result,i*1024,want[i],"snapshot retains literal pre-overwrite pixels");
+    for (int i=0;i<4;i++)mtl_tex_release(&sources[i]);
+    fs->rf.nb=1;fs->rf.b[0]=(nvn_rbind){.kind=NVN_RB_TEX,.aid=0,.dtt=MTLTextureType2D};
+    printf("private feedback snapshots complete\n");
+}
 // The rule without a listed shader: copy once, reuse until a barrier, end the pass when an earlier draw of it read the attachment directly.
 static void reuse_case(NvProg *pr) {
     int before = failed, tid = 650; NvShader *fs = pr->sh[1]; fs->rf.b[0].reg = 0;
@@ -105,6 +131,11 @@ static void reuse_case(NvProg *pr) {
     S.chmask.mask = 0xffffffffu;
     fb_prepare(pr);
     CHECK(g_fb_n == 1 && !g_enc && g_fb_count == copies + 1, "a writing draw after a direct read ends the pass and reuses the snapshot");
+    id<MTLBuffer> preserved=[g_dev newBufferWithLength:1024 options:MTLResourceStorageModeShared];res_add(preserved);
+    int fresh=1;fb_cache_t *upgraded=fb_snap(source.serial,0,0,MTLPixelFormatRGBA8Unorm,4,4,1,0,&fresh);
+    CHECK(upgraded && !fresh && upgraded->snap!=first,"view permission upgrade keeps the cached snapshot epoch");
+    CHECK(upgraded && (upgraded->snap.usage & MTLTextureUsagePixelFormatView),"upgraded snapshot permits format views");
+    readback(upgraded->snap,preserved,0);
     g_fb_bar++;
     clear(MTLClearColorMake(0, 0, 1, 1));
     fb_prepare(pr);
@@ -112,6 +143,7 @@ static void reuse_case(NvProg *pr) {
     rp_end();
     CHECK(mtl_wait(mtl_sub_commit(), 5000000000ull), "GPU submission completed");
     CHECK(!mtl_last_commit_error(), "GPU submission has no error");
+    pixels(preserved,0,(const uint8_t[]){255,0,0,255},"view upgrade copies cached red bytes instead of the green attachment");
     printf("feedback reuse: %s\n", before == failed ? "PASS" : "FAIL");
     mtl_tex_release(&source);
 }
@@ -138,6 +170,7 @@ int main(void) { @autoreleasepool {
     const int slots[] = {0, 128, 255};
     for (int i = 0; i < 3; i++) slot_case(pr, pipeline, slots[i], i);
     reuse_case(pr);
+    private_case(pr);
     printf("feedback snapshot: %d checks, %d failed\n", checks, failed);
     return failed != 0;
 } }

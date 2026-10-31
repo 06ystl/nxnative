@@ -107,6 +107,7 @@ check_t_perf_order: t_perf_order
 	MTL_DEBUG_LAYER=1 ./t_perf_order
 	DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_perf_order
 	DM_NVN_FAST_WAKE=0 DM_NVN_SLICE_MERGE=0 DM_NVN_CS_HOIST=0 MTL_DEBUG_LAYER=1 ./t_perf_order
+	DM_NVN_BARRIER=full MTL_DEBUG_LAYER=1 ./t_perf_order
 t_link_ticks: t_link_ticks.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_link_ticks.m $(filter-out ../nvn/hle_nvn.c,$(MTL_T_SRC)) $(FW)
 t_cpu_tex: t_cpu_tex.m $(MTL_T_DEP)
@@ -195,6 +196,9 @@ t_geometry: t_geometry.m $(MTL_T_DEP)
 check_t_geometry: RUN_ENV = MTL_DEBUG_LAYER=1
 t_feedback: t_feedback.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_feedback.m $(MTL_T_SRC) $(FW)
+t_pso_opt: t_pso_opt.m $(MTL_T_DEP)
+	clang $(CFLAGS) -fobjc-arc -o $@ t_pso_opt.m $(MTL_T_SRC) $(FW)
+check_t_pso_opt: RUN_ENV = MTL_DEBUG_LAYER=1
 t_rast_discard: t_rast_discard.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_rast_discard.m $(MTL_T_SRC) $(FW)
 t_queue_origin: t_queue_origin.m $(MTL_T_DEP)
@@ -238,7 +242,8 @@ t_geometry_primitive_id: t_geometry_primitive_id.m t_geometry.m $(MTL_T_DEP)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_geometry_primitive_id.m $(MTL_T_SRC) $(FW)
 .PHONY: check_t_feedback
 check_t_feedback: t_feedback
-	MTL_DEBUG_LAYER=1 ./t_feedback
+	DM_NVN_ENC_THREAD=0 MTL_DEBUG_LAYER=1 ./t_feedback
+	DM_NVN_ENC_THREAD=1 MTL_DEBUG_LAYER=1 ./t_feedback
 t_mip_extent: t_mip_extent.m ../nvn/hle_nvn.c ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(GFX) $(GFX_H)
 	clang $(CFLAGS) -fobjc-arc -o $@ t_mip_extent.m ../../host/crash.c ../../host/hle_bigstack.c t_host_stubs.c $(filter-out ../nvn/nvn_mtl.m,$(GFX)) $(FW)
 .PHONY: check_t_mip_extent

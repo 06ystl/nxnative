@@ -125,6 +125,98 @@ Evidence: `01007EF00011E000-work/perf-v4.20/`, including the `slots-off-*`,
 throughput measurements; foreground display pacing and other games were not
 measured.
 
+### Mac 1440p pipeline and stage optimization
+
+The candidate keeps native 2560x1440, the same effects, draws and frame step.
+Two general changes carry the measured improvement:
+[hot pipelines compile with complete colour state](../../../docs/reference/shaders.md#hot-metal-4-pipelines-compile-with-complete-colour-state),
+and [independent vertex work overlaps earlier fragments](../../../docs/reference/rendering.md#independent-vertex-work-overlaps-earlier-fragment-work).
+[Feedback snapshots request format views only when needed](../../../docs/reference/rendering.md#feedback-snapshots-request-format-views-only-when-needed),
+preserving cached pre-barrier pixels when permission is upgraded. No new
+environment variable, shader translation or image-quality reduction is involved.
+
+Measurements use the same Zora bridge seed and fixed camera, v4.20 resources,
+`DM_GAME_RES=2560x1440`, `DM_FPS=60`, silent audio, no window, seconds 40–70 of
+85-second fresh processes. Both old and new hosts are compiled with production
+`-O2 -mcpu=apple-m1 -mmacosx-version-min=27.0`; earlier CLI measurements used
+`-O1` and must not be treated as a source-only comparison with these rows.
+Weather and animation continue during each run.
+
+| Host / run | Generated fps | Frame p50 / p95 / p99 / max, ms | GPU mean, ms | Frames over 25 ms |
+|---|---:|---|---:|---:|
+| Original Release-equivalent, prod-control-a | 54.4 | 18.17 / 19.80 / 20.21 / 21.90 | 16.737 | 0 |
+| Candidate without copy batching, prod-trim-a | 58.3 | 17.02 / 18.53 / 18.89 / 21.65 | 16.045 | 0 |
+| Final candidate, prod-final-a | 57.7 | 17.19 / 18.69 / 19.05 / 24.52 | 16.095 | 0 |
+| Original Release-equivalent, prod-control-b | 54.2 | 18.32 / 19.89 / 20.17 / 20.90 | 16.773 | 0 |
+
+Attribution runs used the same production flags: with feedback changes alone,
+`fasto2-b` reached 55.5 fps; background full-state promotion, `opt-a`, 57.2 fps,
+frame p95 18.77 ms and max 20.15 ms. About 436 common pipelines had been adopted
+by the steady scene, with no compile failure. The final/control windows also
+had no red or crash report. The dependency-proven stage path
+before the copy-batching removal, `root-a`, reached 58.7 fps, p95 18.39 ms and
+max 24.61 ms. These rows are generated throughput, not displayed FPS, and
+neither their mean nor their p95 meets a stable 16.67 ms budget yet.
+
+Discarded experiments: independent private feedback copies removed about ten
+intra-encoder barriers per frame but gave no repeatable throughput gain, so
+the batching tracker, counters and dedicated tests were removed. Four-draw
+submissions were no faster than the existing 16-draw default (58.3 versus
+58.7 fps in the root-history pair). Synchronous uniform copies gave no gain.
+Compiling full-state pipelines directly in the draw path introduced a
+117.95 ms frame; the final path compiles off-thread while drawing with the
+working pipeline. Unrestricted stage overlap reached 59.5–59.7 fps, but did
+not prove vertex dependencies, so it was replaced by the protected path.
+
+MacNativeGames reference: `933b6a0d1438de160208a0a13eb5e8d7a2cb8094`, retained in
+`01007EF00011E000-work/perf-v4.20/reference/`. Its tile-feedback path would read
+newer pixels than this game's cached decal snapshots, and its six-colour-face
+cube grouping targets a different pass layout. Neither was copied. Further
+bandwidth work needs actual attachment/counter evidence ([Apple's memory
+bandwidth guide](https://developer.apple.com/documentation/xcode/measuring-the-gpus-use-of-memory-bandwidth));
+compute occupancy tuning is workload/device-specific ([Optimize GPU renderers
+with Metal, 13:10](https://developer.apple.com/videos/play/wwdc2023/10127/?time=790)),
+not a reason to change shader precision or texture filtering.
+
+GPU tests cover literal output pixels, snapshots and permission upgrades,
+non-blocking pipeline promotion/failure/retirement, late vertex dependencies,
+shared storage and shader writes. Performance-ordering tests run under direct
+and deferred encoding, with hoists/merges disabled and with full barriers.
+The final checks passed: `t_perf_order` 75 in each of four modes,
+`t_feedback` 88 in each encoding mode, `t_pso_opt` 84. LLVM 23.1.4
+`clang-tidy` reports no file/check pair above the repository baseline; the
+11 documentation tests pass. Scene and inventory screenshots were inspected.
+Evidence, configurations,
+per-frame TSVs and independent save copies are in
+`01007EF00011E000-work/perf-v4.21/`; the seed is
+`01007EF00011E000-work/qhd-v4.19/seed`.
+
+A separate timestamp profile (`prod-profile`, frames 2400, 2700, 3000, 3300)
+shows 140–142 render passes and a 15.73–16.82 ms first-to-last encoder span.
+The largest groups are the full-resolution RG11B10F/D32F passes (1.89 ms
+summed encoder duration per frame), RG11B10F/D16 pass (1.46 ms), and four/five
+colour G-buffer passes (1.42/1.11 ms). Attachment bookkeeping totals about
+1.12 GB loaded and 0.90 GB stored per frame; these are logical uncompressed
+sizes, not measured DRAM traffic. The reported 4.42–5.08 ms timestamp gaps
+include unmeasured vertex work (render begin stamps are after the vertex
+stage), so they do not prove idle GPU time. The next useful investigation is
+an Xcode GPU capture of these passes to distinguish shader stalls from
+attachment traffic before changing them. Profiled runs are excluded from the
+throughput comparison above.
+
+The reviewable App is
+`01007EF00011E000-work/perf-v4.21/Zelda v4.21 1440p Test.app`, using
+`perf-v4.21/app-state/save`, an independent copy of the benchmark seed, and
+its own bundle ID. It keeps the controller-UI patch beside the test App;
+normal startup controller selection still applies. Its bundled defaults are
+native 1440p and 60 fps. It has not replaced the formal App.
+
+**Foreground validation remains pending.** The `opt-window-a` trial ran while
+macOS was locked: all measured frames were dropped and no requested screenshot
+was produced. That run is invalid presentation evidence. Keep the formal
+v4.20 App until a visible candidate run verifies scene/HUD colours, display
+intervals and long frames at native 1440p. Other games and iOS were not tested.
+
 ## Rendering
 
 - **Native Mac resolution presets (current, 1.9.0).** `DM_GAME_RES=1280x720`, `1920x1080` or `2560x1440` selects scene, HUD and output dimensions together; it is also available in the native settings panel and takes effect after restart. Unset retains the game's original mode-dependent sizes. The loader checks all original instructions against main build `cd57b23fa4bbad65803d9788c01821ee` before applying the profile's `mac_resolution_patch` rows. See [1440p memory budgets and validation](#native-mac-1440p-validation).
@@ -292,6 +384,8 @@ Before publishing, the fixes were integrated with main's pipeline archive and GP
 - The frame step under load: `DM_TEST_PRESENT_LAG=1,12` (12 ms added to every frame: 30 fps at 1.000 of real time).
 
 ## Found on this game
+
+- **Native 1440p optimization:** [Hot complete-state pipelines](../../../docs/reference/shaders.md#hot-metal-4-pipelines-compile-with-complete-colour-state), [dependency-proven vertex/fragment overlap](../../../docs/reference/rendering.md#independent-vertex-work-overlaps-earlier-fragment-work), and [feedback texture usage](../../../docs/reference/rendering.md#feedback-snapshots-request-format-views-only-when-needed). Matched workloads and remaining presentation validation are recorded [above](#mac-1440p-pipeline-and-stage-optimization).
 
 - **Resolved, two stale chain folders held 4.4 GB:** [Old shader library folders grew a game's build folder with each chain change](../../../docs/reference/shaders.md#old-shader-library-folders-grew-a-games-build-folder-with-each-chain-change).
 - **Resolved: 1.6.0 (v786432) crashed 10-60 s into the first scene (issue #251)** in `h_nvnBufferGetAddress` (`main+0x14ef6e0`, reader `main+0x14ef440`) and in other places (`main+0x12970dc`, `+0x13615f4`, `+0x1445d48`, `+0x1db5cb8`, `+0x1472470`): the game's job queue (`main+0x13a0730`) takes its lock with a bare `ldxr` (no acquire), so on Apple cores two workers popped the same job, and two threads built draw lists into one view and arena (`main+0x14e8884` begin, commit `main+0x14ee3c0`). [Lock acquire without acquire ordering runs a queue item twice](../../../docs/reference/threads.md#lock-acquire-without-acquire-ordering-runs-a-queue-item-twice).
