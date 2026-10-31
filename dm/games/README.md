@@ -114,7 +114,11 @@ value, equipped-bow link field, link-generation field, owner-generation field,
 owner-actor field, ready-state value, and reload-state value. Global offsets are
 main-relative; other fields are object-relative. The actor lifecycle field applies
 to both player and bow. Ready, reload and drawing values must be distinct.
-An invalid link generation is `0xffffffff`.
+An invalid link generation is `0xffffffff`. An optional final register number
+identifies the bow actor at `OBS_BOW_SHOT`; omitted or `31` disables shot
+notifications while preserving the legacy progressive-resistance behavior.
+The shot gate must be verified against actual release, cancellation and empty
+arrows; animation requests and inventory count changes alone are insufficient.
 
 Only add a layout after checking its binary references and observing pause,
 damage, equipment loss and scene teardown on that exact build. The host rejects

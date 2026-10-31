@@ -101,6 +101,7 @@ void front_run(void (*guest)(void)) {
     dm_audio_sources_prepare(g_mod, g_nmod);
     dm_adaptive_shield_sample = dm_shield_mac_bind(g_mod, g_nmod) ? dm_shield_mac_sample : NULL;
     dm_adaptive_trigger_sample = dm_bow_mac_bind(g_mod, g_nmod) ? dm_bow_mac_sample : NULL;
+    dm_adaptive_bow_shot_sample = dm_adaptive_trigger_sample ? dm_bow_mac_shot_sample : NULL;
     // A game: tell macOS its work is latency-critical, so the system does not trade its frame time for power while the frame rate is capped
     static id activity; activity = [[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityUserInitiated | NSActivityLatencyCritical reason:@"game"];
     if (!getenv("DM_WINDOW")) { guest(); return; }

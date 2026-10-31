@@ -466,13 +466,16 @@ write for every input change. Actual game charge raises the slope to 0.15/0.55;
 the normalized charge ramp is capped at 2/s, with at most 50 ms of catch-up after
 a scheduling gap. Only changed 1/32 charge buckets are sent. Full charge holds a
 plateau; it does not grow indefinitely. This is independent of `DM_RUMBLE_GAIN`.
-No game code, frame timing or shader inputs are modified for this feature.
+The observation gate preserves its original instruction. Feedback does not
+change game state, frame timing or shader inputs.
 
 The feedback slope remains enabled during charge updates. Released R2 (value <=
 0.02) resets to the light baseline even if game animation still reports a draw.
 A draw/reload-to-ready transition while held is cancellation, not a new idle
-preload. Cancellation, invalid state, device/session changes or a changed player/
-bow identity require release before rearming. Unclassified states disable output.
+preload. Cancellation unloads R2 and keeps it off through release; the next slight
+press restores preload before the digital ZR threshold. Invalid state, device/
+session changes or a changed player/bow identity require release before rearming.
+Unclassified states disable output.
 The SDK exposes discrete trigger positions; a mathematical slope does not imply
 infinitely smooth physical resistance.
 
@@ -489,6 +492,25 @@ pause freeze state 2/charge 1; damage can leave charge 1 with state 0; unequippi
 can retain both state 2 and charge 1; returning to title can retain the old player
 pointer after its lifecycle becomes inactive. Empty-arrow draws are still real
 draw animations. A charge observation alone does not establish an arrow was fired.
+
+The optional build-gated `OBS_BOW_SHOT` records the equipped bow's actual release
+effect before its finite-ammo handling. This works independently of the inventory
+count and the unlimited-arrows cheat. The observer checks the live player and
+equipment-link identity, then publishes a sequence and monotonic timestamp. It
+never writes to game state or calls an output API. On the feedback queue, a fresh
+shot belonging to the recent draw produces an 80 ms full-travel pushback that
+unloads in four steps (initial slope 0.48/0.71, final 0.18/0.29), then returns to
+light preload. An already-fired arrow may break its bow and still produce this
+short effect. Cancelled and empty-arrow draws generate no shot event. Menus,
+scene teardown, output ineligibility, controller replacement and shutdown clear
+pending recoil; notifications older than 100 ms are discarded. Native and shared
+USB output use the same slope sequence, preserving actuator audio and L2.
+
+Windowless independent-save traces distinguish cancellation, two actual releases
+and an empty-arrow attempt. The release-effect path fires only for the two actual
+shots; the `BowShoot` animation request also occurs for the empty attempt and is
+therefore unsuitable as a trigger. The new rebound's physical feel awaits manual
+confirmation.
 
 Window/session ineligibility, replacing a controller, disconnect and shutdown
 clear any trigger effect owned by this backend on the feedback queue. Visible
@@ -601,6 +623,13 @@ also confirmed both in the integrated v4.12.2 game with audio gain 20. Its outpu
 log recorded 894,753 nonzero USB frames, input peak 0.053589 and USB peak 1,
 with zero callback layout errors or queue drops.
 
+The action-event extension was captured with an independent save and no physical
+output. Raw FWAV comparison against the game's BARS entries identified sword
+swings, `Bow_Draw`/`Bow_Release`, `SE_BM_EXPLODE`, `SE_Cmn_Damage3`, body landings
+and water effects. Voice/UI event names were excluded by the same selector.
+The user reported that the integrated haptics were working well on 2026-10-31.
+The v4.12.2 app remains an earlier accepted USB audio/trigger baseline.
+
 ### Mac controller motion
 
 Leave `DM_MOTION_SOURCE` out of the Mac app's user `env.txt` to use the current
@@ -623,13 +652,6 @@ It can appear as a DualShock 4 with `hasRotationRate` set and fixed compatibilit
 values, so the product category or capability flag alone does not establish a
 physical gyro. One such USB connection returned raw gyro zeros and fixed
 acceleration; GameController reported a constant 0.492691 g. These values are
-The action-event extension was captured with an independent save and no physical
-output. Raw FWAV comparison against the game's BARS entries identified sword
-swings, `Bow_Draw`/`Bow_Release`, `SE_BM_EXPLODE`, `SE_Cmn_Damage3`, body landings
-and water effects. Voice/UI event names were excluded by the same selector.
-The user reported that the integrated haptics were working well on 2026-10-31.
-The v4.12.2 app remains an earlier accepted USB audio/trigger baseline.
-
 not rescaled into a connected sensor. Use phone mode with this model. With
 unusable calibration data, the menu reports **Waiting for usable controller
 motion data** instead of asking the user to keep holding still.

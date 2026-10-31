@@ -4,7 +4,10 @@
 static int checks, failed, calls, fail_at, interrupt;
 #define CHECK(c, msg) do { checks++; if (!(c)) { failed++; fprintf(stderr,"FAIL: %s\n",msg); } } while (0)
 static const dm_bow_layout layouts[] = {DM_GAME_MAC_BOW_STATE};
-static const dm_bow_layout fallback = {"fixture",0x100,0x108,0x60,0x110,0xa0,0x1f8c,0x64,1,2,0,0xbc8,8,0x40,0x48,0,1};
+static const dm_bow_layout fallback = {"fixture",0x100,0x108,0x60,0x110,0xa0,0x1f8c,0x64,1,2,0,0xbc8,8,0x40,0x48,0,1,31};
+static int shot_gate=1; static void (*shot_observer)(const uint64_t*);
+int gate_obs_present(int id) { return shot_gate && id==OBS_BOW_SHOT; }
+void gate_obs_set(int id,void(*fn)(const uint64_t*)) { if(id==OBS_BOW_SHOT)shot_observer=fn; }
 static const dm_bow_layout *l;
 static uint8_t *image, info[256], player[0x3000], owner[256], bow[256], charge_owner[256];
 static void put32(void *p, uint32_t n) { memcpy(p,&n,4); }
@@ -72,6 +75,20 @@ int main(void) {
     reset();module_t m={0};strcpy(m.name,"main");strcpy(m.build_id,l->build);m.base=image;m.size=0x2000000;m.data_off=0x1b7a000;
     if(layouts[0].build) CHECK(dm_bow_mac_bind(&m,1)&&dm_bow_mac_sample().charge==1,"verified image binds actual Mach reader");
     else CHECK(!dm_bow_mac_bind(&m,1),"profile without a bow layout has no reader");
+    if(layouts[0].build && l->shot_bow_reg<=30) {
+        uint64_t regs[31]={0};regs[l->shot_bow_reg]=(uintptr_t)bow;
+        CHECK(shot_observer!=NULL,"verified successful-shot gate registered");
+        shot_observer(regs);dm_bow_shot shot=dm_bow_mac_shot_sample();
+        CHECK(shot.sequence==1&&shot.player==(uintptr_t)player&&shot.time_ns&&shot.live,"successful shot publishes live player and timestamp");
+        regs[l->shot_bow_reg]++;shot_observer(regs);CHECK(dm_bow_mac_shot_sample().sequence==1,"other actors cannot trigger player bow recoil");
+        regs[l->shot_bow_reg]=(uintptr_t)bow;put32(image+l->mode_global,1);shot_observer(regs);
+        CHECK(!dm_bow_mac_shot_sample().live&&dm_bow_mac_shot_sample().sequence==1,"menu invalidates a shot and rejects new notifications");
+        put32(image+l->mode_global,0);bow[l->life_field]=2;shot_observer(regs);
+        CHECK(dm_bow_mac_shot_sample().sequence==2,"arrow fired on the bow-breaking shot is still a real shot");
+        player[l->life_field]=2;CHECK(!dm_bow_mac_shot_sample().live,"scene teardown invalidates recoil independently of retained pointer");
+        reset();shot_gate=0;shot_observer=NULL;dm_bow_mac_bind(&m,1);
+        CHECK(!shot_observer&&!dm_bow_mac_shot_sample().sequence,"old rewritten modules retain progressive resistance without shot notifications");shot_gate=1;
+    }
     strcpy(m.build_id,"unverified");CHECK(!dm_bow_mac_bind(&m,1)&&dm_bow_mac_sample().phase==DM_BOW_UNAVAILABLE,"unknown build has no fixed-address reads");
     strcpy(m.build_id,l->build);m.size=1024;CHECK(!dm_bow_mac_bind(&m,1),"layout outside image rejected");
     CHECK(!dm_bow_mac_bind(NULL,0),"no modules supported");

@@ -97,7 +97,7 @@ class MacBowProfileTests(unittest.TestCase):
         profile = game.load('01007EF00011E000')
         row = profile.values('mac_bow_state')[0]
         self.assertIn('DM_GAME_MAC_BOW_STATE', game.header(profile))
-        for field, value in [(0, '0'*32), (1, '3'), (2, '-1'), (8, '256'), (14, '0x100000000'), (15, '2'), (16, '0')]:
+        for field, value in [(0, '0'*32), (1, '3'), (2, '-1'), (8, '256'), (14, '0x100000000'), (15, '2'), (16, '0'), (17, '32')]:
             with self.subTest(field=field):
                 candidate = copy.deepcopy(profile)
                 bad = row.copy(); bad[field] = value
@@ -106,6 +106,11 @@ class MacBowProfileTests(unittest.TestCase):
                 with self.assertRaises(ValueError): game.header(candidate)
         profile.rows.append(('mac_bow_state', row.copy()))
         with self.assertRaisesRegex(ValueError, 'duplicate'): game.header(profile)
+
+    def test_legacy_bow_layout_disables_optional_shot_gate(self):
+        profile = game.load('01007EF00011E000')
+        profile.rows = [(k,v[:17] if k == 'mac_bow_state' else v) for k,v in profile.rows]
+        self.assertIn('0x1, 0x1f}', game.header(profile))
 
     def test_other_profiles_have_no_bow_addresses(self):
         for profile in game.all_games():

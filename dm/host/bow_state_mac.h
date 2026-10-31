@@ -8,6 +8,7 @@ typedef struct {
     uint32_t state_field, life_field, active_life, drawing_state, playing_mode;
     uint32_t bow_link_field, link_generation_field, owner_generation_field, owner_actor_field;
     uint32_t ready_state, reload_state;
+    uint32_t shot_bow_reg; // 31 disables the optional successful-shot gate.
 } dm_bow_layout;
 typedef int (*dm_bow_read_fn)(void *context, uint64_t address, void *out, size_t size);
 
@@ -18,7 +19,12 @@ typedef struct {
     uint64_t player, bow;
     uint32_t generation;
 } dm_bow_snapshot;
+typedef struct {
+    uint64_t sequence, player, time_ns;
+    int live;
+} dm_bow_shot;
 
 dm_bow_snapshot dm_bow_sample(const dm_bow_layout *layout, uint64_t base, dm_bow_read_fn read, void *context);
 int dm_bow_mac_bind(const module_t *modules, int count);
 dm_bow_snapshot dm_bow_mac_sample(void);
+dm_bow_shot dm_bow_mac_shot_sample(void);

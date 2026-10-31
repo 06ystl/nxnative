@@ -102,5 +102,10 @@ FRAME_STEP = {'cd57b23fa4bbad65803d9788c01821ee': frame_step}
 OBS = {
   "cd57b23fa4bbad65803d9788c01821ee": [
     (0xf477f8, 23, "2a0003f5", "sound event created; observe selected sources without changing audio"),
+    # Bow component's actual release effect (Release1 and charged variants).
+    # x0 is the bow actor loaded from component+8. Cancel/empty-arrow actions
+    # bypass this path. It precedes the finite-ammo branch, so recoil does not
+    # depend on inventory changes or the unlimited-arrows cheat.
+    (0x7fe7f0, 24, "52800022", "successful equipped-bow release; observe recoil without changing audio or arrows"),
   ],
 }

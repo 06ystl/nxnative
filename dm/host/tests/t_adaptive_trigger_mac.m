@@ -4,6 +4,8 @@ static int checks,failed,reads;
 static dm_trigger_slope usb_effect[2];static unsigned usb_writes[2];
 static void usb_output(unsigned side,const dm_trigger_slope *effect){usb_effect[side]=*effect;usb_writes[side]++;}
 static dm_bow_snapshot sample;
+static dm_bow_shot shot;
+static dm_bow_shot read_shot(void) { return shot; }
 static dm_shield_snapshot shield;
 static dm_shield_snapshot read_shield(void) { return shield; }
 static uint64_t now=100000000;
@@ -99,6 +101,45 @@ int main(void) {@autoreleasepool {
     sample.phase=DM_BOW_DRAW;sample.charge=1;t.value=1;tick();
     CHECK(usb_effect[1].high>.35f&&t.writes==native_writes,"charge updates use only the shared USB report owner");
     dm_adaptive_trigger_set_active(0);CHECK(!usb_effect[0].enabled&&!usb_effect[1].enabled&&t.stops==native_stops,"pause releases USB effects without native writes");
+    dm_adaptive_bow_shot_sample=read_shot;
+    dm_adaptive_trigger_set_active(1);sample=(dm_bow_snapshot){DM_BOW_READY,0,1,2,3};t.value=0;tick();
+    sample.phase=DM_BOW_DRAW;sample.charge=1;t.value=1;tick();
+    unsigned left_writes=usb_writes[0];
+    shot=(dm_bow_shot){1,1,now+20000000,1};sample=(dm_bow_snapshot){0};t.value=.1;tick();
+    CHECK(usb_effect[1].enabled&&usb_effect[1].high>.55f,"actual shot briefly pushes R2 back, including a shot that breaks its bow");
+    CHECK(usb_writes[0]==left_writes&&t.writes==native_writes,"rebound preserves L2 and USB audio output ownership");
+    last=usb_effect[1].high;
+    for(int i=0;i<3;i++){tick();CHECK(usb_effect[1].enabled&&usb_effect[1].high<last,"rebound unloads progressively over 80 ms");last=usb_effect[1].high;}
+    tick();CHECK(!usb_effect[1].enabled&&!g_recoil_until,"rebound terminates with no sticky resistance");
+    sample=(dm_bow_snapshot){DM_BOW_READY,0,1,2,3};t.value=0;tick();
+    CHECK(usb_effect[1].enabled&&usb_effect[1].high==.35f,"successful shot returns to the accepted light preload");
+    unsigned count=usb_writes[1];tick();CHECK(usb_writes[1]==count,"one shot notification cannot retrigger the effect");
+    t.value=1;sample.phase=DM_BOW_DRAW;tick();sample.phase=DM_BOW_READY;tick();
+    CHECK(!usb_effect[1].enabled&&!g_recoil_until,"cancelled draw unloads directly without rebound");
+    t.value=0;tick();CHECK(!usb_effect[1].enabled,"cancelled draw stays unloaded after release");
+    t.value=.03;tick();CHECK(usb_effect[1].enabled&&usb_effect[1].high==.35f,"next slight press rearms preload before digital ZR");
+    t.value=1;sample.phase=DM_BOW_DRAW;tick();sample=(dm_bow_snapshot){0};t.value=0;tick();
+    CHECK(!usb_effect[1].enabled&&!g_recoil_until,"empty bow or interrupted draw without a committed shot never rebounds");
+    sample=(dm_bow_snapshot){DM_BOW_READY,0,1,2,3};tick();
+    CHECK(!usb_effect[1].enabled,"empty release remains unloaded when idle returns");
+    t.value=1;sample.phase=DM_BOW_DRAW;tick();
+    shot=(dm_bow_shot){2,99,now+20000000,1};sample=(dm_bow_snapshot){0};tick();
+    CHECK(!g_recoil_until,"another actor's projectile cannot trigger R2");
+    sample=(dm_bow_snapshot){DM_BOW_READY,0,1,2,3};t.value=0;tick();sample.phase=DM_BOW_DRAW;t.value=1;tick();
+    shot=(dm_bow_shot){3,1,now-200000000,1};sample=(dm_bow_snapshot){0};tick();
+    CHECK(!g_recoil_until,"an old shot after a scheduling gap is not replayed");
+    sample=(dm_bow_snapshot){DM_BOW_READY,0,1,2,3};t.value=0;tick();sample.phase=DM_BOW_DRAW;t.value=1;tick();
+    shot=(dm_bow_shot){4,1,now+20000000,1};sample=(dm_bow_snapshot){0};tick();
+    shot.live=0;tick();CHECK(!g_recoil_until&&!usb_effect[1].enabled,"menu or player teardown clears rebound immediately");
+    shot.live=1;dm_adaptive_trigger_set_active(0);dm_adaptive_trigger_set_active(1);tick();
+    CHECK(!g_recoil_until,"resume discards a pending shot notification");
+    sample=(dm_bow_snapshot){DM_BOW_READY,0,1,2,3};t.value=0;tick();sample.phase=DM_BOW_DRAW;t.value=1;tick();
+    sample=(dm_bow_snapshot){0};t.value=0;tick();
+    shot=(dm_bow_shot){5,1,now+20000000,1};tick();
+    CHECK(g_recoil_until&&usb_effect[1].enabled,"release notification arriving after the post-shot state is still handled once");
+    dm_adaptive_trigger_set_active(0);CHECK(!usb_effect[1].enabled&&!g_recoil_until,"ineligibility also clears an in-flight rebound");
+    sample=(dm_bow_snapshot){DM_BOW_READY,0,1,2,3};t.value=0;
+    dm_adaptive_trigger_set_active(0);
     dm_adaptive_trigger_set_usb_output(NULL);dm_adaptive_trigger_set_active(1);t.value=0;tick();
     CHECK(t.writes==native_writes+1&&t.high==.35f,"leaving USB restores native trigger output and invalidates its cached state");
     dm_adaptive_trigger_shutdown();CHECK(!dm_adaptive_trigger_available()&&g_sent==-1,"shutdown releases effect");

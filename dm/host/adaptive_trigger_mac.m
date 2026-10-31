@@ -4,6 +4,7 @@
 #include "adaptive_trigger_mac.h"
 
 dm_bow_snapshot (*dm_adaptive_trigger_sample)(void);
+dm_bow_shot (*dm_adaptive_bow_shot_sample)(void);
 dm_shield_snapshot (*dm_adaptive_shield_sample)(void);
 static GCDualSenseAdaptiveTrigger *g_right_trigger, *g_left_trigger;
 static dm_shield_snapshot g_shield_previous;
@@ -13,6 +14,8 @@ static int g_active, g_closed, g_sent = -1, g_rearm = 1;
 static uint64_t g_sampled;
 static float g_charge;
 static dm_bow_snapshot g_previous;
+static uint64_t g_shot_seen, g_pull_player, g_pull_time, g_recoil_player, g_recoil_until;
+static int g_cancelled;
 static dm_trigger_output_fn g_usb_output;
 static int g_native_stale;
 static void write_slope(unsigned side,dm_trigger_slope effect) {
@@ -69,6 +72,8 @@ static void reset_pull(void) {
     trigger_off(); shield_off(); g_shield_previous = (dm_shield_snapshot){0};
     g_shield_time = 0; g_rearm = 1; g_sampled = 0;
     g_previous = (dm_bow_snapshot){0};
+    g_pull_player=g_pull_time=g_recoil_player=g_recoil_until=0; g_cancelled=0;
+    g_shot_seen=dm_adaptive_bow_shot_sample ? dm_adaptive_bow_shot_sample().sequence : 0;
 }
 void dm_adaptive_trigger_attach(GCController *controller) {
     GCExtendedGamepad *profile = controller.extendedGamepad;
@@ -100,17 +105,48 @@ void dm_adaptive_trigger_tick(uint64_t now) {
     int released = isfinite(travel) && travel <= .02f;
     int valid = bow.phase >= DM_BOW_READY && bow.phase <= DM_BOW_DRAW &&
                 isfinite(bow.charge) && bow.charge >= 0 && bow.charge <= 1 && isfinite(travel);
-    int replaced = g_previous.phase && (bow.player != g_previous.player ||
+    int replaced = valid && g_previous.phase && (bow.player != g_previous.player ||
                    bow.bow != g_previous.bow || bow.generation != g_previous.generation);
     int cancelled = bow.phase == DM_BOW_READY &&
                     (g_previous.phase == DM_BOW_DRAW || g_previous.phase == DM_BOW_RELOAD);
+    dm_bow_shot shot=dm_adaptive_bow_shot_sample ? dm_adaptive_bow_shot_sample() : (dm_bow_shot){0};
+    int fired=shot.sequence!=g_shot_seen && shot.live && shot.player==g_pull_player &&
+              now>=shot.time_ns && now-shot.time_ns<=100000000ull &&
+              now>=g_pull_time && now-g_pull_time<=100000000ull;
+    g_shot_seen=shot.sequence;
+    if (fired) {
+        g_recoil_player=shot.player; g_recoil_until=now+80000000ull;
+        g_pull_player=g_pull_time=0; g_charge=0; g_cancelled=0;
+    }
+    if (g_recoil_until) {
+        // Successful shot only: briefly push back, then unload over 80 ms.
+        // Keep using slope reports so USB actuator audio retains its mode.
+        if (!shot.live || shot.player!=g_recoil_player || replaced ||
+            (valid && bow.phase==DM_BOW_RELOAD) || now>=g_recoil_until) {
+            g_recoil_until=0; trigger_off();
+        } else {
+            int stage=(int)((g_recoil_until-now+19999999ull)/20000000ull);
+            if (g_sent!=32+stage) {
+                write_slope(1,(dm_trigger_slope){1,0,1,.08f+.10f*stage,.15f+.14f*stage});
+                g_sent=32+stage;
+            }
+            g_previous=bow; return;
+        }
+    }
     // Idle and damage both use READY. A cancelled pull must be released before
     // idle preloading can resume; a stale charge must never revive its effect.
     if (!valid || replaced || cancelled) { trigger_off(); g_rearm = 1; }
+    if ((cancelled && !fired) || replaced) {
+        g_cancelled=1; g_pull_player=g_pull_time=0;
+    }
     g_previous = bow;
-    if (!valid) return;
+    if (!valid) { if (g_pull_player) g_cancelled=1; return; }
     if (released) { g_rearm = 0; g_charge = 0; }
     if (g_rearm) return;
+    // A cancelled pull stays unloaded through release. The next slight press
+    // rearms the light slope before the game's digital ZR threshold.
+    if (g_cancelled) { if (released) return; g_cancelled=0; }
+    if (bow.phase==DM_BOW_DRAW && !released) { g_pull_player=bow.player; g_pull_time=now; }
 
     // Preload before the digital ZR threshold and the game's reload animation.
     // The controller supplies the position slope locally; analog movement does

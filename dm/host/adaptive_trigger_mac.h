@@ -10,6 +10,7 @@ void dm_adaptive_trigger_attach(GCController *controller);
 #endif
 // Bound once before controller startup; NULL for games without a verified reader.
 extern dm_bow_snapshot (*dm_adaptive_trigger_sample)(void);
+extern dm_bow_shot (*dm_adaptive_bow_shot_sample)(void);
 extern dm_shield_snapshot (*dm_adaptive_shield_sample)(void);
 int dm_adaptive_trigger_available(void);
 void dm_adaptive_trigger_set_active(int active);
