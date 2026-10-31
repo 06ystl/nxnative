@@ -150,7 +150,7 @@ static void network_hid_test(void) {
     dm_motion_read=source;dm_dsu_configure(client,"127.0.0.1",ntohs(address.sin_port));
     CHECK(wait_phase(DM_DSU_READY,4000),"real UDP samples complete initial calibration");
     uint32_t id=0,handle=0;
-    CHECK(h_hid_SixHandles(&handle,1,&id,STYLE_FULLKEY)==1 && handle==0x020003,"full-key handle uses Horizon fields");
+    CHECK(h_hid_SixHandles(&handle,1,&id,STYLE_FULLKEY)==1 && handle==0,"full-key handle uses Horizon fields");
     dm_sixaxis_state state[2];memset(state,0x5a,sizeof state);
     CHECK(h_hid_SixStates(state,1,&handle)==0,"sensor must be started before use");
     h_hid_SixStart(&handle);
@@ -171,7 +171,7 @@ static void network_hid_test(void) {
     dm_dsu_set_active(client,1);CHECK(h_hid_SixStates(state,1,&handle)==1,"focus return restores fresh sensor state");
     h_hid_SixStop(&handle);CHECK(!h_hid_SixStates(state,1,&handle),"stopped sensor reports no samples");h_hid_SixStart(&handle);
     mode=0;id=0x20;uint32_t handheld;
-    CHECK(h_hid_SixHandles(&handheld,1,&id,STYLE_HANDHELD)==1 && handheld==0x020804,"handheld handle has player index eight");
+    CHECK(h_hid_SixHandles(&handheld,1,&id,STYLE_HANDHELD)==1 && handheld==0x2001,"handheld handle uses canonical style and Npad id");
     h_hid_SixStart(&handheld);CHECK(h_hid_SixStates(state,1,&handheld)==1,"handheld play receives the same phone motion");
     CHECK(!h_hid_SixStates(state,1,&handle),"wrong-player/style handle cannot read current sensor");mode=1;
     // Let the three-second MotionSource client lease expire unless renewed.

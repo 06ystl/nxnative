@@ -96,6 +96,7 @@ dm_bow_shot dm_bow_mac_shot_sample(void) {
     shot.live=shot.player && live_player()==shot.player;
     return shot;
 }
+static void shot_gate_observe(uint64_t *regs,int param) { (void)param;shot_observe(regs); }
 int dm_bow_mac_bind(const module_t *modules, int count) {
     g_layout = NULL; g_base = 0;
     pthread_mutex_lock(&shot_lock); g_shot=(dm_bow_shot){0}; pthread_mutex_unlock(&shot_lock);
@@ -108,7 +109,7 @@ int dm_bow_mac_bind(const module_t *modules, int count) {
             for (size_t n = 0; n < sizeof globals / sizeof *globals; n++)
                 if (globals[n] < m->data_off || globals[n] > m->size || m->size - globals[n] < 8) return 0;
             g_layout = l; g_base = (uint64_t)m->base;
-            if (l->shot_bow_reg<=30 && gate_obs_present(OBS_BOW_SHOT)) gate_obs_set(OBS_BOW_SHOT,shot_observe);
+            if (l->shot_bow_reg<=30 && gate_obs_present(OBS_BOW_SHOT)) gate_obs_set(OBS_BOW_SHOT,shot_gate_observe);
             LOG("Mac bow feedback: verified main %s", m->build_id);
             return 1;
         }

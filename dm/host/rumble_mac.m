@@ -13,6 +13,7 @@
 #include <time.h>
 #include <string.h>
 #include "dm_input.h"
+#include "hle_haptics.h"
 #include "rumble_mac.h"
 #include "adaptive_trigger_mac.h"
 #include "audio_sources_mac.h"
@@ -108,6 +109,19 @@ static void rumble_send(unsigned side, const dm_vibration_value *v) {
     pthread_mutex_lock(&g_rumble_mu);
     if (g_rumble_accepting) g_rumble_want[side] = *v;
     pthread_mutex_unlock(&g_rumble_mu);
+}
+// Shared HID owns accepted per-player values. Keep the existing Mac output
+// adapter and publish only changed motors, under the shared state's ordering.
+static void rumble_snapshot(dm_haptic_state state) {
+    static dm_vibration_value previous[2];
+    static int initialized;
+    if (state.player || !dm_vibration_send) return;
+    for (unsigned side=0;side<2;side++) {
+        if (!initialized || memcmp(&previous[side],&state.motor[side],sizeof previous[side]))
+            dm_vibration_send(side,&state.motor[side]);
+        previous[side]=state.motor[side];
+    }
+    initialized=1;
 }
 static void rumble_drop_engine(unsigned side) { // rumble queue
     CHHapticEngine *engine = g_rumble_engines[side];
@@ -268,6 +282,8 @@ void dm_rumble_mac_start(void) {
 #endif
         dm_vibration_send = rumble_send;
         dm_vibration_shutdown = dm_rumble_mac_shutdown;
+        dm_haptics_init(rumble_snapshot,1);
+        dm_haptics_route(0,1);
         atexit(dm_rumble_mac_shutdown);
     });
 }
@@ -280,6 +296,7 @@ void dm_rumble_mac_attach(GCController *controller) {
         if (g_rumble_controller == controller && g_rumble_haptics == haptics) { rumble_accept(); return; }
         audio_close(); g_audio_retry = 0;
         for (unsigned s = 0; s < 2; s++) { rumble_retire(s); g_rumble_retry[s] = 0; }
+        dm_haptics_clear(0);
         pthread_mutex_lock(&g_rumble_mu); rumble_clear_want(); pthread_mutex_unlock(&g_rumble_mu);
         g_rumble_controller = controller; g_rumble_haptics = haptics;
         g_rumble_xbox = [controller.productCategory isEqualToString:GCProductCategoryXboxOne];
@@ -292,6 +309,7 @@ void dm_rumble_mac_attach(GCController *controller) {
 void dm_rumble_mac_set_active(int active) {
     dm_rumble_mac_start();
     rumble_sync(^{ g_rumble_active = !!active; dm_adaptive_trigger_set_active(active); rumble_accept(); });
+    dm_haptics_suspend(DM_HAPTICS_INACTIVE,!active);
 }
 void dm_rumble_mac_shutdown(void) {
     if (!g_rumble_queue) return;

@@ -107,7 +107,8 @@ static void test_concurrent_publication(void) {
     for(unsigned i=0;i<4;i++) { int e=pthread_create(&threads[i],NULL,concurrent_sender,(void *)(uintptr_t)i);CHECK(!e,"create concurrent SDK sender");if(e)abort(); }
     for(unsigned i=0;i<4;i++)pthread_join(threads[i],NULL);
     uint32_t handle=3;dm_vibration_value actual;h_hid_VibActual(&actual,&handle);
-    CHECK(atomic_load(&concurrent_calls)==160&&atomic_load(&concurrent_peak)==1,"concurrent SDK calls publish in one order");
+    int calls=atomic_load(&concurrent_calls);
+    CHECK(calls>=159&&calls<=160&&atomic_load(&concurrent_peak)==1,"changed concurrent SDK values publish in order; an initial idle value may be deduplicated");
     CHECK(actual.amplitude_low==atomic_load(&concurrent_last),"actual-value snapshot matches the last published output");
     dm_vibration_send=sink;
 }
@@ -146,7 +147,7 @@ static void test_hid(void) {
     CHECK(!h_hid_VibPermit(),"unimplemented frontends retain no-vibration behavior");
     CHECK(!h_hid_VibHandles(handles,2,&id,STYLE_FULLKEY),"no handles without frontend");
     dm_vibration_value actual;h_hid_VibActual(&actual,handles);
-    CHECK(!memcmp(&actual,(uint8_t[16]){0},16),"unsupported actual-value ABI remains zeroed");
+    CHECK(actual.amplitude_low==0&&actual.frequency_low==160&&actual.amplitude_high==0&&actual.frequency_high==320,"unsupported actual value uses the shared HID idle state");
     dm_rumble_mac_start();
     CHECK(h_hid_VibPermit(),"Mac advertises rumble before physical hotplug");
     CHECK(h_hid_VibHandles(handles,1,&id,STYLE_FULLKEY)==1&&handles[0]==3&&handles[1]==0xdeadbeef,"one-entry output capacity");
@@ -160,7 +161,7 @@ static void test_hid(void) {
     CHECK(!h_hid_VibMountedDetail(permission,&handles[1])&&permission[0]==1,"detail mounted proxy avoids hid service");
     uint32_t invalid=0x20003;CHECK(!h_hid_VibMounted(&invalid),"six-axis device index is not a vibration handle");
     opmode=0;id=NPAD_HANDHELD;
-    CHECK(h_hid_VibHandles(handles,2,&id,STYLE_HANDHELD)==2&&handles[0]==0x804&&handles[1]==0x10804,"handheld maps to SDK player index 8");
+    CHECK(h_hid_VibHandles(handles,2,&id,STYLE_HANDHELD)==2&&handles[0]==0x2004&&handles[1]==0x12004,"handheld handles carry the canonical npad ID and motor fields");
     invalid=3;CHECK(!h_hid_VibMounted(&invalid),"inactive full-key handle rejected in handheld mode");
     opmode=1;
 }
@@ -185,9 +186,9 @@ static void test_split(void) {
     CHECK(a.stops==1&&!b.stops,"explicit zero stops only its own handle");
     dm_vibration_value actual;CHECK(!h_hid_VibActualDetail(&actual,&handles[1])&&actual.amplitude_high==.25f,"detail actual-value proxy preserves last accepted game value");
     values[1]=(dm_vibration_value){2,-100,-1,9000};h_hid_VibSendDetail(&handles[1],&values[1]);h_hid_VibActual(&actual,&handles[1]);
-    CHECK(actual.amplitude_low==1&&actual.amplitude_high==0&&actual.frequency_low==0&&actual.frequency_high==1250,"invalid ranges are clamped at HID boundary");
+    CHECK(actual.amplitude_low==1&&actual.amplitude_high==0&&actual.frequency_low==160&&actual.frequency_high==1250,"invalid frequency falls back while valid ranges are clamped at the shared HID boundary");
     send_value(1,NAN,1,160,320);tick(now+28000000000ull);
-    CHECK(b.stops==1,"nonfinite values become silence");
+    CHECK(!b.stops&&b.intensity==1,"a nonfinite band becomes silent without muting the other valid band");
     send_value(0,.001f,0,160,320);tick(now+29000000000ull);
     CHECK(left.players.lastObject.intensity>0&&left.players.lastObject.intensity<.002f,"quiet valid vibration is retained");
     a=left.players.lastObject;

@@ -105,10 +105,11 @@ def main(args=None):
     # Validate only the selected platforms, before starting expensive shared work.
     if 'macos' in targets: mac.check_prereqs(env, xlate)
     if 'ios' in targets: nsp.check_prereqs(env, xlate)
+    nsp.check_metal(sys.executable, repo, env)
     env.update(DM_GAME=g.id, DM_ROOT=str(work), WORK=str(work / 'tmp'), FONT_PY=sys.executable)
     env.pop('IOSOUT', None)
     if 'macos' in targets:
-        env.update(MACOSX_DEPLOYMENT_TARGET='26.0', CLANG_MODULE_CACHE_PATH=str(work / 'tools/clang_modules'))
+        env.update(MACOSX_DEPLOYMENT_TARGET='26.6', CLANG_MODULE_CACHE_PATH=str(work / 'tools/clang_modules'))
     picks = nsp.pick_nsps(fam, nsp.nsp_versions(fam, g.builds()), versions)
     gb = sum({p.stat().st_size for b, u in picks.values() for p in (b, u) if p}) / 2**30 + 6
     if nsp.free_gb(nsp_dir) < gb and not all((ex / v).exists() for v in versions):
@@ -116,11 +117,10 @@ def main(args=None):
     ex.mkdir(parents=True, exist_ok=True); (work / 'tmp').mkdir(exist_ok=True)
     nsp.say(f'Game profile: {g.id}; targets: {", ".join(targets)}; shared work: {work}')
     nx = nsp.build_nx_extract(repo, work, logs, env)
-    dirs, clone = {}, None
+    dirs = {}
     for ver in versions:
         base, update = picks[ver]
-        dirs[ver] = nsp.extract(nx, keys, ex, ver, base, update, clone, logs, g)
-        if update is None and clone is None and nsp.can_clone(ex): clone = dirs[ver] / 'RomFS'
+        dirs[ver] = nsp.extract(nx, keys, ex, ver, base, update, None, logs, g)
     mismatches = [f'{v}: {item}' for v in versions for item in nsp.build_mismatch(dirs[v], v, g)]
     if mismatches: raise nsp.BuildError('The extracted modules do not match the registered builds: ' + '; '.join(mismatches))
     game = dirs[pkg]
@@ -137,27 +137,28 @@ def main(args=None):
     if g.get('shader_glslc_capture', 'off') == 'on':
         nsp.capture_glslc(repo, {v: dirs[v] for v in need}, pkg, patched, work, env, logs, g)
     sh = work / 'shader'
-    package_key = nsp.split_shaders(sys.executable, repo, [dirs[v] / 'RomFS' for v in need],
-                      [dirs[v] / 'ExeFS/main' for v in need], sh / 'pkg', env, logs, g)
+    package_key = nsp.split_shaders(sys.executable, repo, [nsp.rfs.source(dirs[v]) for v in need],
+                      [dirs[v] / 'ExeFS/main' for v in need], sh / 'pkg', env, logs, g, dlc_roms=sorted(p for p in aoc.iterdir() if p.is_dir() or p.suffix == '.img') if aoc else [])
     ios = None
     if 'ios' in targets:
         # One dmsh_build invocation produces the Mac cache and, via IOSOUT, iOS libraries.
-        ios = nsp.build_shaders(sys.executable, repo, sh, xlate, env, logs, g, package_key)
+        ios = nsp.build_shaders(sys.executable, repo, sh, xlate, env, logs, g, package_key, include_mac='macos' in targets)
     else:
-        nsp.build_shaders(sys.executable, repo, sh, xlate, env, logs, g, package_key, with_ios=False)
+        nsp.build_shaders(sys.executable, repo, sh, xlate, env, logs, g, package_key, mac=True)
+    pso = nsp.mac_pso(sys.executable, repo, work, sh / 'cache' / f'b-{nsp.chain_of(repo)}', g, '', env, logs) if 'macos' in targets and g.table('shader_pairs.tsv').is_file() else None
     completed, failures = [], []
     for target in targets:
         out = outputs[target]
         nsp.say(f'Packaging {target}: {out}')
         try:
             if target == 'macos':
-                minimum = package_app.build_app(repo, work, out, g, patched, game / 'RomFS', sh / 'cache',
+                minimum = package_app.build_app(repo, work, out, g, patched, nsp.rfs.source(game), sh / 'cache',
                                                 name, bundle_id, builds[pkg]['display'], icon, aoc,
                                                 env_file, env, nsp.run, nsp.can_clone,
-                                                controller_ui=getattr(args, 'controller_ui', None))
+                                                controller_ui=getattr(args, 'controller_ui', None), pso=pso)
                 nsp.say(f'Mac app ready (macOS {minimum}+): {out}')
             else:
-                package_ios(repo, work, out, g, patched, game / 'RomFS', ios, name, bundle_id,
+                package_ios(repo, work, out, g, patched, nsp.rfs.source(game), ios, name, bundle_id,
                             icon, aoc, env_file, env, logs)
                 nsp.say(f'Unsigned IPA ready: {out}')
             completed.append(out)

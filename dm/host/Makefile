@@ -14,7 +14,8 @@ $(error no game profile $(GAME) (neither in dm/games nor in DM_GAMES_DIR))
 endif
 endif
 GAME_H = gen/$(GAME)/game_profile.h
-CFLAGS=-O1 -g -Wall -Wno-unused-function
+include ../mac/min_os.mk
+CFLAGS=-O1 -g -Wall -Wno-unused-function -mmacosx-version-min=$(MACOS_MIN)
 # Service-layer takeover hle_*.c files are included by wildcard: adding a file does not touch this line (avoids merge conflicts)
 # Mac features are explicit so platform-only sources stay out of the iOS build.
 MAC_FRONT_SRC = front_mac.m gamepad_mac.m controller_ui_mac.c
@@ -26,24 +27,23 @@ MAC_HEADERS = gamepad_mac.h controller_ui_mac.h rumble_mac.h adaptive_trigger_ma
               audio_wave.h audio_sources_mac.h audio_haptics_dsp_mac.h audio_haptics_dynamics.h audio_haptics_usb_mac.h trigger_effect_mac.h input_focus_mac.h \
               motion_mac.h motion_controller_mac.h motion_filter_mac.h motion_dsu_mac.h \
               resolution_mac.h timing_mac.h cheats_mac.h
-MAC_FRAMEWORKS = -framework Cocoa -framework QuartzCore -framework Metal -framework GameController \
+MAC_FRAMEWORKS = -framework Cocoa -framework QuartzCore -framework Metal -framework MetalFX -framework GameController \
                  -framework CoreHaptics -framework AudioToolbox -framework CoreAudio -framework IOKit \
                  -framework VideoToolbox -framework CoreMedia -framework CoreVideo -framework ImageIO \
                  -framework UniformTypeIdentifiers
-SRC=main.c loader.c hle.c crash.c probe.c thread.c memstat.m $(sort $(wildcard hle_*.c)) \
-    $(MAC_FRONT_SRC) $(MAC_FEEDBACK_SRC) input_focus_mac.m $(MAC_MOTION_SRC) $(MAC_GAME_SRC) entry.S
+SRC=main.c loader.c hle.c crash.c probe.c thread.c save_sync.c memstat.m haptics_apple.m $(sort $(wildcard hle_*.c)) $(MAC_FRONT_SRC) $(MAC_FEEDBACK_SRC) input_focus_mac.m $(MAC_MOTION_SRC) $(MAC_GAME_SRC) entry.S
 # NVN null device + nn::vi + the Vulkan layer (dm/gfx/)
 # Sources under dm/gfx, dm/gfx/nvn, dm/gfx/tex, dm/gfx/vk and dm/gfx/gl are included by wildcard (tests/ and metal/ do not go into the host): adding a file does not touch this line
 GFX=$(sort $(wildcard ../gfx/*.c ../gfx/nvn/*.c ../gfx/nvn/*.m ../gfx/nvn/*.S ../gfx/tex/*.c ../gfx/tex/*.m ../gfx/vk/*.m ../gfx/gl/*.m))
-GFX_H=$(sort $(wildcard ../gfx/nvn/*.h ../gfx/nvn/*.inc ../gfx/nvn/include/*.h ../gfx/tex/*.h))
-# Third party: libvpx ships only the VP9 decoder's sources (movie decoding, hle_movie.c), with its configuration headers in config/ (arm64, shared by Mac and iOS). Built separately into a static library, file by file, so host changes do not recompile it
+GFX_H=$(sort $(wildcard ../gfx/nvn/*.h ../gfx/nvn/*.inc ../gfx/nvn/include/*.h ../gfx/tex/*.h))   # *.inc: nvn_mtl.m includes them (nvn_geometry.inc); an edit there alone used not to rebuild the host
+# Third party: libvpx ships the VP8 and VP9 decoder sources (movie decoding, hle_movie.c), with its configuration headers in config/ (arm64, shared by Mac and iOS). Built separately into a static library, file by file, so host changes do not recompile it
 VPX=../third_party/libvpx
 VPX_SRC=$(sort $(shell find $(VPX) -name '*.c'))
 VPX_OBJ=$(patsubst $(VPX)/%.c,gen/vpx/%.o,$(VPX_SRC))
 VPX_LIB=gen/vpx/libvpx.a
-gen/vpx/%.o: $(VPX)/%.c $(wildcard $(VPX)/config/*.h)
+gen/vpx/%.o: $(VPX)/%.c $(wildcard $(VPX)/config/*.h) ../mac/min_os.mk
 	@mkdir -p $(dir $@)
-	clang -O2 -g -I$(VPX) -I$(VPX)/config -c $< -o $@
+	clang -O2 -g -mmacosx-version-min=$(MACOS_MIN) -I$(VPX) -I$(VPX)/config -c $< -o $@
 $(VPX_LIB): $(VPX_OBJ)
 	rm -f $@; ar rcs $@ $^
 .DEFAULT_GOAL := dmhost   # The header generation rules are written first below, so the default goal must be stated explicitly (otherwise make only generates the headers and does not build the host)
@@ -65,17 +65,16 @@ endif
 endif
 .PHONY: FORCE
 FORCE:
-dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h dm_input.h front.h $(MAC_HEADERS) $(GFX_H) ../gfx/nvn/dmsh_chain.h $(GAME_H) $(GAME_STAMP) $(VPX_LIB)
+dmhost: $(SRC) $(GFX) ../third_party/stb_vorbis/stb_vorbis.c dm.h hle.h romfs_image.h save_sync.h dm_input.h pad_slots.h hle_haptics.h haptics_apple.h motion_fusion.h motion_apple.h motion_pro.h motion_pro_mac.h pad_apple.h front.h $(MAC_HEADERS) $(GFX_H) $(GAME_H) $(GAME_STAMP) $(VPX_LIB)
 	clang $(CFLAGS) -I../gfx/nvn/include -I../third_party/vulkan-headers/include -I$(dir $(GAME_H)) -I$(VPX) -I../third_party/stb_vorbis -fobjc-arc -o $@ $(SRC) $(GFX) $(VPX_LIB) $(MAC_FRAMEWORKS)
 # Finder-launchable Mac host. Keep dmhost's command-line and diagnostic defaults intact.
 # The packager raises MACOS_MIN when a cached shader library targets a newer OS.
-MACOS_MIN ?= 26.0
 MACOS_APP_CFLAGS ?= -O2 -g -Wall -Wno-unused-function
 VPX_APP_OBJ=$(patsubst $(VPX)/%.c,gen/vpx_macos/%.o,$(VPX_SRC))
 VPX_APP_LIB=gen/vpx_macos/libvpx.a
 gen/vpx_macos/%.o: $(VPX)/%.c $(wildcard $(VPX)/config/*.h)
 	@mkdir -p $(dir $@)
-	clang -O2 -g -arch arm64 -mmacosx-version-min=26.0 -I$(VPX) -I$(VPX)/config -c $< -o $@
+	clang -O2 -g -arch arm64 -mmacosx-version-min=$(MACOS_MIN) -I$(VPX) -I$(VPX)/config -c $< -o $@
 $(VPX_APP_LIB): $(VPX_APP_OBJ)
 	rm -f $@; ar rcs $@ $^
 dmhost_app: $(SRC) ../macos/app_mac.m dm.h hle.h dm_input.h dm_padmap.h $(MAC_HEADERS) front.h $(GFX_H) $(GAME_H) ../gfx/nvn/dmsh_chain.h $(GAME_STAMP) $(VPX_APP_LIB) Makefile FORCE

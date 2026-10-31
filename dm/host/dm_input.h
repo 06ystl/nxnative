@@ -15,14 +15,40 @@ void dm_input_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t 
 uint64_t dm_input_samples(void);   // Cumulative number of times the game has sampled the controller
 // Independent controller channel (Mac GameController, gamepad_mac.m; DM_KEYS scripts): stored separately from keyboard / touch input. When the game reads it,
 // buttons are ORed and each axis uses the value with greater magnitude. The iOS frontend merges physical and touch input before calling dm_input_set.
+// The cheat VM's key mask (hle_cheats.c): every input source's button bits (0..15 in the enum above) ORed and the
+// merged axes' eight stick-direction bits (16..23), one flat bitset; no latches are consumed (the game's own reads
+// keep them). The NpadButton SL / SR bits (24 / 25) never fire: no input source of this host reports them
+uint64_t dm_cheats_keys(void);
+// Physical controller path (Mac / iOS GameController): stored separately from keyboard / touch and scripted input (DM_KEYS / DM_CTL); when the game reads player 1,
+// buttons are ORed bitwise and each stick axis takes whichever source is deflected more. All 0 when no controller is connected.
+// dm_pad_set is player 1's controller (DM_BTN_SHAKE counts there only); dm_pad_set_player sets player n + 1's, which the game reads on its own npad (hle_hid.c) while
+// dm_pad_players has its bit set; a player whose npad the game does not support (SetSupportedNpadIdType) feeds player 1 instead, so a one-player game sees every controller
+#define DM_PLAYERS 8   // npads No1..No8; player 1 is the Handheld npad in handheld mode (DM_OPMODE=0)
 void dm_pad_set(uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);
+void dm_pad_set_player(int player, uint64_t buttons, int32_t lx, int32_t ly, int32_t rx, int32_t ry);   // player 0..DM_PLAYERS-1 (player 1..8)
+void dm_pad_players(uint32_t mask);   // bit p: player p + 1 has a controller; player 1 always counts as connected (the keyboard, the touch gamepad, DM_KEYS)
+// Live controller motion (hle_hid.c, motion_fusion.h): player 0..DM_PLAYERS-1's gyro and accelerometer as GameController reports them, acceleration in G (gravity direction,
+// (0, 0, -1) face up) and rotation rate in rad/s, in Apple's controller frame. While samples keep coming the player's six-axis sensor follows the controller; dm_motion_clear stops it
+void dm_motion_set(int player, const float acc[3], const float rot[3]);
+void dm_motion_set_switch(int player, const float acc[3], const float rot[3]);   // player 0 only: the phone's own sensors in the Switch frame, kept separate; DM_MOTION_AXES does not apply
+void dm_motion_clear(int player);   // clears GameController motion; another fresh source can take over
+// Passive controller HID, already in the Switch frame (G, rad/s). sample_ns is the sample's host now_ns() time, not the packet's arrival; stale / reordered samples are ignored.
+// Kept separate from GameController and the phone; used while GameController supplies no fresh motion for that player. DM_MOTION_AXES / ACC_SIGN apply only to GameController.
+void dm_motion_set_hid(int player, const float acc[3], const float rot[3], uint64_t sample_ns);
+void dm_motion_clear_hid(int player);
+uint32_t dm_player_npad(int player);  // the npad id the game reads player p + 1 on: Handheld (0x20) or No1 (0) for player 1, No n (id n - 1) for player n
 
 // nn::hid::SixAxisSensorState ABI. Angular velocity and angle use revolutions;
 // acceleration is in g, delta_time in nanoseconds. Direction is a 3x3 basis.
 typedef struct {
-    uint64_t delta_time, sampling;
-    float acceleration[3], angular_velocity[3], angle[3], direction[3][3];
-    uint32_t attributes, reserved;
+    union { uint64_t delta_time; int64_t delta_ns; };
+    uint64_t sampling;
+    union { float acceleration[3]; float acc[3]; };
+    union { float angular_velocity[3]; float gyro[3]; };
+    float angle[3];
+    union { float direction[3][3]; float dir[9]; };
+    uint32_t attributes;
+    union { uint32_t reserved; uint32_t _pad; };
 } dm_sixaxis_state;
 _Static_assert(sizeof(dm_sixaxis_state) == 0x60, "SixAxisSensorState ABI");
 // Optional frontend motion source, independent of buttons/sticks. Returns 0

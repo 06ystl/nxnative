@@ -66,7 +66,9 @@ static void shake_history(void) {
     dm_input_set(0,0,0,0,0);clock_ns+=1000000000;
     CHECK(!h_hid_SixStates(samples,1,&handle),"completed shake returns control to unavailable phone");
     dm_motion_read=NULL;h_hid_SixStop(&handle);
-    CHECK(!h_hid_SixStates(samples,1,&handle),"stopped built-in sensor reports no state");
+    CHECK(h_hid_SixStates(samples,1,&handle)==1,"native sensor keeps upstream always-sampling semantics");
+    dm_motion_read=unavailable_motion;
+    CHECK(!h_hid_SixStates(samples,1,&handle),"stopped Mac provider reports no state");
 }
 int main(void) {
     setenv("DM_KEYS", "f2:RLeft~0.02,f5:RUp~0.02,f8:RRight~0.02,f11:RDown~0.02,f14:A+LRight+RUp~0.02*2/3,0.20:Right~0.02", 1);

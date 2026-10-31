@@ -5,10 +5,10 @@
 #include "motion_dsu_mac.h"
 #include "motion_controller_mac.h"
 
-static dm_dsu_client *g_motion;
+static dm_dsu_client *g_phone_client;
 static int g_phone_mode;
 static int read_phone(dm_sixaxis_state *state, int fusion) {
-    if (g_motion) return dm_dsu_read(g_motion,state,fusion);
+    if (g_phone_client) return dm_dsu_read(g_phone_client,state,fusion);
     memset(state,0,sizeof *state); return 0;
 }
 static int motion_uses_phone(void) {
@@ -23,8 +23,8 @@ static void motion_source_start(void) {
     dm_controller_motion_enable(!g_phone_mode);
     dm_motion_read = g_phone_mode ? read_phone : dm_controller_motion_read;
     if (g_phone_mode) {
-        g_motion = dm_dsu_create();
-        if (!g_motion) fprintf(stderr,"【红】Could not start phone motion worker\n");
+        g_phone_client = dm_dsu_create();
+        if (!g_phone_client) fprintf(stderr,"【红】Could not start phone motion worker\n");
     }
     fprintf(stderr,"[dm] Motion source: %s (DM_MOTION_SOURCE)\n",g_phone_mode ? "phone" : "controller");
 }
@@ -50,16 +50,16 @@ static void motion_source_start(void) {
         self.connectItem.enabled = self.disconnectItem.enabled = NO;
         return;
     }
-    self.connectItem.enabled = g_motion != NULL;
-    if (!g_motion) { self.statusItem.title = @"Phone motion unavailable"; self.calibrateItem.enabled = self.disconnectItem.enabled = NO; return; }
-    dm_dsu_status status = dm_dsu_get_status(g_motion);
+    self.connectItem.enabled = g_phone_client != NULL;
+    if (!g_phone_client) { self.statusItem.title = @"Phone motion unavailable"; self.calibrateItem.enabled = self.disconnectItem.enabled = NO; return; }
+    dm_dsu_status status = dm_dsu_get_status(g_phone_client);
     self.statusItem.title = status.phase == DM_DSU_OFF ? @"Phone motion off" : @(status.message);
     self.calibrateItem.enabled = status.phase == DM_DSU_READY || status.phase == DM_DSU_CALIBRATING;
     self.disconnectItem.enabled = status.phase != DM_DSU_OFF;
 }
 - (void)connectPhone:(id)sender {
     (void)sender;
-    if (!g_phone_mode || !g_motion) return;
+    if (!g_phone_mode || !g_phone_client) return;
     NSUserDefaults *prefs = NSUserDefaults.standardUserDefaults;
     NSTextField *host = [[NSTextField alloc] initWithFrame:NSMakeRect(0, 38, 340, 24)];
     host.placeholderString = @"Phone IP address shown in MotionSource";
@@ -86,7 +86,7 @@ static void motion_source_start(void) {
             [prefs setObject:address forKey:@"MotionSourceHost"];
             [prefs setInteger:number forKey:@"MotionSourcePort"];
             [prefs setBool:YES forKey:@"MotionSourceEnabled"];
-            dm_dsu_configure(g_motion,address.UTF8String,(unsigned)number); [self refresh]; return;
+            dm_dsu_configure(g_phone_client,address.UTF8String,(unsigned)number); [self refresh]; return;
         }
         alert.informativeText = @"Enter the phone's IP address and a port from 1 to 65535 (MotionSource defaults to 26760).";
     }
@@ -98,16 +98,16 @@ static void motion_source_start(void) {
     alert.informativeText = g_phone_mode ? @"Lay the phone flat with the screen facing up, then keep it still for one second after pressing Calibrate. This measures gyro drift and resets the heading. The Motion menu shows when calibration is complete." : @"Lay the controller still, buttons facing up, for one second after pressing Calibrate. This measures gyro drift and resets the heading.";
     [alert addButtonWithTitle:@"Calibrate"]; [alert addButtonWithTitle:@"Cancel"];
     if ([alert runModal] == NSAlertFirstButtonReturn) {
-        if (g_phone_mode && g_motion) dm_dsu_calibrate(g_motion);
+        if (g_phone_mode && g_phone_client) dm_dsu_calibrate(g_phone_client);
         else if (!g_phone_mode) dm_controller_motion_calibrate();
     }
     [self refresh];
 }
 - (void)disconnectPhone:(id)sender {
     (void)sender;
-    if (!g_phone_mode || !g_motion) return;
+    if (!g_phone_mode || !g_phone_client) return;
     [NSUserDefaults.standardUserDefaults setBool:NO forKey:@"MotionSourceEnabled"];
-    dm_dsu_configure(g_motion,"",0); [self refresh];
+    dm_dsu_configure(g_phone_client,"",0); [self refresh];
 }
 - (void)downloadSource:(id)sender {
     (void)sender;
@@ -144,13 +144,13 @@ void dm_motion_mac_start(void) {
     NSUserDefaults *prefs = NSUserDefaults.standardUserDefaults;
     NSString *host = [prefs stringForKey:@"MotionSourceHost"];
     NSInteger port = [prefs integerForKey:@"MotionSourcePort"];
-    if (g_phone_mode && g_motion && [prefs boolForKey:@"MotionSourceEnabled"] && host.length && port > 0 && port <= 65535)
-        dm_dsu_configure(g_motion,host.UTF8String,(unsigned)port);
+    if (g_phone_mode && g_phone_client && [prefs boolForKey:@"MotionSourceEnabled"] && host.length && port > 0 && port <= 65535)
+        dm_dsu_configure(g_phone_client,host.UTF8String,(unsigned)port);
     [owner refresh];
     NSTimer *timer = [NSTimer timerWithTimeInterval:0.5 repeats:YES block:^(NSTimer *t) { (void)t; [owner refresh]; }];
     [NSRunLoop.mainRunLoop addTimer:timer forMode:NSRunLoopCommonModes];
 }
 void dm_motion_mac_set_active(int active) {
     dm_controller_motion_set_active(active);
-    if (g_motion) dm_dsu_set_active(g_motion,active);
+    if (g_phone_client) dm_dsu_set_active(g_phone_client,active);
 }

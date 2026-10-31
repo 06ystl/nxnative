@@ -160,6 +160,7 @@ void dm_audio_sources_finish(unsigned e,const float *stereo,unsigned frames){
     if(!playing)return;
     dm_audio_sources_submit(stereo,frames);
 }
+static void audio_gate_observe(uint64_t *regs,int param) { (void)param;dm_audio_sources_observe(regs); }
 int dm_audio_sources_prepare(const module_t *modules,int count){
     configured=0;layout=NULL;base=0;
     const char *enable=getenv("DM_AUDIO_HAPTICS");if(!enable||strcmp(enable,"1"))return 0;
@@ -168,7 +169,7 @@ int dm_audio_sources_prepare(const module_t *modules,int count){
         uint32_t offsets[]={l->mode_global,l->info_global,l->player_vtable};int valid=1;
         for(unsigned j=0;j<3;j++)if(offsets[j]>m->size||m->size-offsets[j]<8)valid=0;
         if(!valid||!gate_obs_present(OBS_AUDIO_EVENT))break;
-        layout=l;base=(uint64_t)m->base;configured=1;gate_obs_set(OBS_AUDIO_EVENT,dm_audio_sources_observe);
+        layout=l;base=(uint64_t)m->base;configured=1;gate_obs_set(OBS_AUDIO_EVENT,audio_gate_observe);
         LOG("Audio haptics: spatial action/footstep events enabled for main %s",m->build_id);return 1;
     }
     LOG("Audio haptics: this build needs a verified sound-event observation gate; using game rumble");return 0;

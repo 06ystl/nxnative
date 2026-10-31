@@ -64,7 +64,7 @@ int main(void) { @autoreleasepool {
     setenv("DM_MOTION_SOURCE","controller",1);CHECK(!motion_uses_phone(),"explicit controller accepted");
     setenv("DM_MOTION_SOURCE","invalid",1);CHECK(!motion_uses_phone(),"invalid source selects the documented controller default");
     unsetenv("DM_MOTION_SOURCE");motion_source_start();
-    CHECK(dm_motion_read==dm_controller_motion_read&&!g_motion,"default installs controller reads without creating a phone worker");
+    CHECK(dm_motion_read==dm_controller_motion_read&&!g_phone_client,"default installs controller reads without creating a phone worker");
     DmMotionMenu *menu=[DmMotionMenu new];
     menu.statusItem=[NSMenuItem new];menu.connectItem=[NSMenuItem new];
     menu.calibrateItem=[NSMenuItem new];menu.disconnectItem=[NSMenuItem new];[menu refresh];
@@ -127,15 +127,15 @@ int main(void) { @autoreleasepool {
     CHECK(!pad.motion.sensorsActive&&!pad.motion.valueChangedHandler&&other.motion.sensorsActive&&!read_state(&state),"replacement stops the old sensor and starts fresh on the new 1P pad");
     stale((id)pad.motion);CHECK(!read_state(&state),"late callback from a replaced pad is ignored");
     other.motion.hasRotationRate=NO;pad_select(devices);
-    CHECK(!other.motion.sensorsActive&&!read_state(&state)&&!g_motion,"a gyro-less pad does not fall back to a phone");
+    CHECK(!other.motion.sensorsActive&&!read_state(&state)&&!g_phone_client,"a gyro-less pad does not fall back to a phone");
     other.motion.hasRotationRate=YES;pad_select(devices);rest(other.motion);CHECK(read_state(&state),"capable controller can recover after refresh");
     [menu refresh];CHECK(menu.calibrateItem.enabled&&[menu.statusItem.title isEqualToString:@"Controller motion connected"],"menu reports native readiness and enables native calibration");
     setenv("DM_MOTION_SOURCE","phone",1);motion_source_start();
-    CHECK(dm_motion_read==read_phone&&g_motion&&!other.motion.sensorsActive&&!other.motion.valueChangedHandler,"explicit phone mode exclusively selects the DSU worker and stops native sensors");
+    CHECK(dm_motion_read==read_phone&&g_phone_client&&!other.motion.sensorsActive&&!other.motion.valueChangedHandler,"explicit phone mode exclusively selects the DSU worker and stops native sensors");
     [menu refresh];CHECK(menu.connectItem.enabled&&!menu.calibrateItem.enabled&&[menu.statusItem.title isEqualToString:@"Phone motion off"],"phone mode enables its connection control with the correct status");
     CHECK(!read_state(&state),"an unconnected phone does not fall back to a native controller");
-    dm_dsu_destroy(g_motion);g_motion=NULL;unsetenv("DM_MOTION_SOURCE");motion_source_start();
-    CHECK(dm_motion_read==dm_controller_motion_read&&!g_motion&&other.motion.sensorsActive,"removing the setting restores native controller mode");
+    dm_dsu_destroy(g_phone_client);g_phone_client=NULL;unsetenv("DM_MOTION_SOURCE");motion_source_start();
+    CHECK(dm_motion_read==dm_controller_motion_read&&!g_phone_client&&other.motion.sensorsActive,"removing the setting restores native controller mode");
     devices=@[];pad_select(devices);
     CHECK(!other.motion.sensorsActive&&!read_state(&state),"disconnect clears native motion immediately");
     dm_controller_motion_enable(0);dm_rumble_mac_shutdown();

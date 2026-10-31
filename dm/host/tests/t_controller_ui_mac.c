@@ -15,6 +15,13 @@ static int reads(const char *p, const char *want) {
     int ok=!h_fs_ReadFile(&got,fd,0,b,sizeof b-1);h_fs_CloseFile(fd);
     return ok&&!strcmp(b,want);
 }
+static void image_fixture(const char *path) {
+    struct { char magic[8]; uint64_t off,size,count; } head = {{'D','M','R','O','M','F','S','1'},49,87,3};
+    img_ent entries[3] = {{1,2,0,0,0,0},{32,8,0,6,1,0},{40,9,6,9,1,0}};
+    FILE *f=fopen(path,"wb");if(!f)abort();
+    fwrite(&head,sizeof head,1,f);fwrite("originalbase-only",17,1,f);
+    fwrite(entries,sizeof entries,1,f);fwrite("buttonuntouched",15,1,f);fclose(f);
+}
 int main(void) {
     char root[]="/private/tmp/t_controller_ui.XXXXXX";CHECK(mkdtemp(root)!=NULL,"temporary resource root");
     char rom[1024],folder[1024],pack[1024],marker[1024],file[1024],user[1024],app[1024];
@@ -48,6 +55,14 @@ int main(void) {
     g_nmnt=0;CHECK(!h_fs_MountRom("user",NULL,0)&&reads("user:/button","user-mod"),"explicit override wins for the same resource");
     unsetenv("DM_ROMFS_OVERLAY");char trailing[1030];snprintf(trailing,sizeof trailing,"%s/",rom);setenv("DM_ROMFS",trailing,1);
     CHECK(dm_controller_ui_mac_select(1),"external patch lookup is independent of the RomFS path");
+    char image[1024];snprintf(image,sizeof image,"%s/RomFS.img",root);image_fixture(image);
+    unsetenv("DM_ROMFS_OVERLAY");setenv("DM_ROMFS",image,1);
+    CHECK(!dm_controller_ui_mac_select(0),"image keeps original prompts without DualSense");
+    g_nmnt=0;CHECK(!h_fs_MountRom("imagebase",NULL,0)&&reads("imagebase:/button","original"),"image supplies original game resources");
+    CHECK(dm_controller_ui_mac_select(1),"external UI activates with a RomFS image");
+    g_nmnt=0;CHECK(!h_fs_MountRom("imageui",NULL,0)&&reads("imageui:/button","PS5"),"PS5 overlay wins over image resource");
+    CHECK(reads("imageui:/untouched","base-only"),"non-UI assets fall through to the image");
+    CHECK(h_fs_OpenFile(&fd,"imageui:/button",MODE_WRITE)==RES_FAIL,"image overlay remains read-only");
     unsetenv("DM_ROMFS_OVERLAY");unlink(marker);
     CHECK(!dm_controller_ui_mac_select(1)&&!getenv("DM_ROMFS_OVERLAY"),"removing the patch marker restores original UI even for DualSense");
     dm_controller_ui_mac_set_app_bundle(NULL);

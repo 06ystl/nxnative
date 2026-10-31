@@ -49,8 +49,8 @@ class PackagingTests(unittest.TestCase):
             shader_inventory(self.msl, 'fixture')
 
     def test_required_os_patch_version_is_preserved(self):
-        self.library('a_b', '26.0.1')
-        self.assertEqual(shader_inventory(self.msl, 'fixture')[1], '26.0.1')
+        self.library('a_b', '26.6.1')
+        self.assertEqual(shader_inventory(self.msl, 'fixture')[1], '26.6.1')
 
     def test_missing_reflection_is_rejected(self):
         (self.libs / 'a_b.json').unlink()
@@ -70,7 +70,7 @@ class PackagingTests(unittest.TestCase):
         with self.assertRaisesRegex(PackageError, 'do not match game profile'):
             validate_shader_inputs(self.msl, 'fixture', profile)
 
-    def packaging_fixture(self, fail_signature=False, external_ui=False, fail_swap=False):
+    def packaging_fixture(self, fail_signature=False, external_ui=False, fail_swap=False, with_pso=False, image_romfs=False):
         repo = self.root / 'repo'; (repo / 'dm/host').mkdir(parents=True)
         (repo / 'dm/host/dmhost_app').write_bytes(b'fixture host')
         license_file = repo / 'dm/third_party/dualsense-trigger/LICENSE'
@@ -88,6 +88,8 @@ class PackagingTests(unittest.TestCase):
             (patched / f'main.{suffix}').write_text('fixture')
         romfs = self.root / 'RomFS'; romfs.mkdir()
         (romfs / 'resource').write_text('fixture resource')
+        if image_romfs:
+            romfs = self.root/'RomFS.img'; romfs.write_bytes(b'fixture image')
         font = self.root / 'font.ttf'; font.write_bytes(b'fixture font')
         out = self.root / "玩家's App.app"; (out / 'Contents').mkdir(parents=True)
         with (out / 'Contents/Info.plist').open('wb') as f:
@@ -105,7 +107,9 @@ class PackagingTests(unittest.TestCase):
 
         def run(cmd, log, env=None, cwd=None, on_line=None):
             if cmd[0] == 'python-fixture': Path(cmd[-1]).write_bytes(b'font')
-            if cmd[0] == 'cp': shutil.copytree(cmd[-2], cmd[-1])
+            if cmd[0] == 'cp':
+                if Path(cmd[-2]).is_file(): shutil.copy2(cmd[-2], cmd[-1])
+                else: shutil.copytree(cmd[-2], cmd[-1])
             if cmd[0] == 'codesign':
                 self.assertEqual((Path(cmd[-1]) / 'Contents/Resources/licenses/dualsense-trigger.txt').read_text(), 'fixture trigger license')
                 with (Path(cmd[-1]) / 'Contents/Info.plist').open('rb') as f: info = plistlib.load(f)
@@ -115,6 +119,11 @@ class PackagingTests(unittest.TestCase):
                 if external_ui: self.assertEqual((ui_out/'romfs/button').read_text(), 'old PS5 icon')
                 if fail_signature: raise RuntimeError('signature failed')
 
+        pso = None
+        if with_pso:
+            pso = self.root/'pipeline-bundle'; pso.mkdir()
+            (pso/'applegpu_fixture.mtl4a').write_bytes(b'fixture archive')
+            (pso/'prebuilt.tsv').write_text('fixture stamp\n')
         rename = Path.rename
         def rename_candidate(path, target):
             if fail_swap and path.name == out.name and path.parent.name.startswith('.nxnative-mac-'):
@@ -125,8 +134,19 @@ class PackagingTests(unittest.TestCase):
             build_app(repo, self.root, out, profile, patched, romfs, self.msl,
                       'Fixture', 'org.nxnative.fixture', '1.0', font, None, None,
                       {'FONT_PY': 'python-fixture', 'STD_FONT': str(font)}, run, lambda _: False,
-                      controller_ui=ui)
+                      controller_ui=ui, pso=pso)
         return out, romfs, ui_out
+
+    def test_shared_extractor_image_is_bundled_without_unpacking(self):
+        out, romfs, _ = self.packaging_fixture(image_romfs=True)
+        self.assertEqual((out/'Contents/Resources/romfs.img').read_bytes(), romfs.read_bytes())
+        self.assertFalse((out/'Contents/Resources/romfs').exists())
+
+    def test_offline_pipeline_archive_is_bundled_with_the_app(self):
+        out, _, _ = self.packaging_fixture(with_pso=True)
+        bundled = out/'Contents/Resources/pso'
+        self.assertEqual((bundled/'applegpu_fixture.mtl4a').read_bytes(), b'fixture archive')
+        self.assertEqual((bundled/'prebuilt.tsv').read_text(), 'fixture stamp\n')
 
     def test_signature_failure_keeps_previous_app_and_removes_staging(self):
         with self.assertRaisesRegex(RuntimeError, 'signature failed'):

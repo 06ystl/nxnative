@@ -30,7 +30,7 @@ def shader_inventory(msl, chain):
     libraries = sorted(folder.glob('*.metallib'))
     if not any(p.name.endswith('_b.metallib') for p in libraries):
         raise PackageError(f'No macOS shader libraries in {folder}')
-    minimum = (26, 0, 0)
+    minimum = (26, 6, 0)
     for lib in libraries:
         data = lib.read_bytes()
         targets = re.findall(rb'air64(?:_v\d+)?-apple-macosx(\d+\.\d+(?:\.\d+)?)', data)
@@ -57,7 +57,9 @@ def validate_shader_inputs(msl, chain, g):
 
 
 def build_app(repo, work, out, g, patched, romfs, msl, app_name, bundle_id,
-              display_version, icon, aoc, env_file, env, run, can_clone, controller_ui=None):
+              display_version, icon, aoc, env_file, env, run, can_clone, controller_ui=None, pso=None):
+    # Normalize virtual image paths from the shared RomFS reader to physical files.
+    romfs = Path(str(romfs))
     ui_out = out.parent / 'patches/dualsense-ui'
     if controller_ui:
         controller_ui = Path(controller_ui).expanduser().resolve()
@@ -94,8 +96,11 @@ def build_app(repo, work, out, g, patched, romfs, msl, app_name, bundle_id,
         for module in g.words('modules'):
             for suffix in ('patched.bin', 'fixups.tsv', 'gates.tsv', 'cuts.tsv', 'obs.tsv'):
                 shutil.copy2(patched / f'{module}.{suffix}', dm)
-        for name in ('shader_map.tsv', 'c1_full.tsv', 'cb_extent.tsv', 'pso_manifest.tsv'):
-            shutil.copy2(g.table(name), dm)
+        for name in ('shader_map.tsv', 'c1_full.tsv', 'cb_extent.tsv', 'pso_manifest.tsv', 'shader_pairs.tsv', 'pso_pairs.tsv'):
+            source = g.table(name)
+            if name == 'pso_pairs.tsv' and not source.is_file(): source = msl.parent / name
+            if not source.is_file(): continue
+            shutil.copy2(source, dm)
         if env_file: shutil.copy2(env_file, dm / 'env.txt')
         shader_dst = res / 'msl' / f'b-{chain}'; shader_dst.mkdir(parents=True)
         shutil.copy2(msl / f'b-{chain}' / 'inputs.tsv', shader_dst)
@@ -108,12 +113,12 @@ def build_app(repo, work, out, g, patched, romfs, msl, app_name, bundle_id,
         run([env['FONT_PY'], repo / 'dm/tools/make_ext_font.py', font / 'nintendo_ext.ttf'], logs / 'font.log', env=env)
         # APFS clones keep an app self-contained without duplicating unchanged resource blocks.
         clone = can_clone(res)
-        required = sum(p.stat().st_size for root in (romfs, aoc, controller_ui) if root and
+        required = sum(p.stat().st_size for root in (romfs, aoc, controller_ui, pso) if root and
                        not (clone and root.stat().st_dev == res.stat().st_dev)
-                       for p in root.rglob('*') if p.is_file())
+                       for p in ([root] if root.is_file() else root.rglob('*')) if p.is_file())
         if shutil.disk_usage(res).free < required + 512 * 2**20:
             raise PackageError(f'Not enough free space to copy game resources to {out.parent}')
-        for source, name, destination in ((romfs, 'romfs', res/'romfs'), (aoc, 'aoc', res/'aoc'),
+        for source, name, destination in ((romfs, 'romfs', res/('romfs.img' if romfs.is_file() else 'romfs')), (aoc, 'aoc', res/'aoc'), (pso, 'pso', res/'pso'),
                                           (controller_ui, 'controller-ui', Path(staging)/'dualsense-ui')):
             if source:
                 flag = '-cR' if clone and source.stat().st_dev == res.stat().st_dev else '-R'

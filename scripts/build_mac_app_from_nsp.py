@@ -29,7 +29,7 @@ import build_ipa_from_nsp as nsp
 
 
 def parse_args(argv):
-    ap = argparse.ArgumentParser(description='Build a native Apple silicon .app from NSPs (macOS 26+, local ad-hoc signature).')
+    ap = argparse.ArgumentParser(description='Build a native Apple silicon .app from NSPs (macOS 26.6+, local ad-hoc signature).')
     ap.add_argument('nsp_dir', nargs='?', default=NSP_DIR, help="Folder holding one game's base, update and optional DLC NSPs")
     ap.add_argument('-k', '--keys', default=PROD_KEYS, help='Path of prod.keys')
     ap.add_argument('-p', '--package', default=PACKAGE, help="Version to pack (default: the game profile's package)")
@@ -45,15 +45,17 @@ def parse_args(argv):
 def check_prereqs(env, xlate):
     if sys.platform != 'darwin' or platform.machine() != 'arm64':
         raise nsp.BuildError('Build on an Apple silicon Mac, using an arm64 Python.')
-    if int(platform.mac_ver()[0].split('.')[0]) < 26:
-        raise nsp.BuildError('The graphics backend requires macOS 26 or later (Metal 4).')
+    if tuple(map(int, platform.mac_ver()[0].split('.')[:2])) < (26, 6):
+        raise nsp.BuildError('The graphics backend requires macOS 26.6 or later (Metal 4).')
     missing = [m for m in ('lz4.block', 'capstone', 'fontTools') if not nsp._importable(m)]
     if missing: raise nsp.BuildError(f'{sys.executable} needs: {", ".join(missing)} (pip install lz4 capstone fonttools)')
-    tools = ('xcrun', 'clang', 'make', 'dotnet', 'zstd', 'spirv-cross', 'codesign', 'sips', 'iconutil', 'lipo', 'plutil')
+    tools = ('xcrun', 'clang', 'make', 'dotnet', 'zstd', 'codesign', 'sips', 'iconutil', 'lipo', 'plutil')
     missing = [t for t in tools if not shutil.which(t, path=env['PATH'])]
     if missing: raise nsp.BuildError('Tools not found: ' + ', '.join(missing))
     sdk = subprocess.check_output(['xcrun', '--sdk', 'macosx', '--show-sdk-version'], env=env, text=True).strip()
     if int(sdk.split('.')[0]) < 26: raise nsp.BuildError('Xcode with a macOS 26 or newer SDK is required.')
+    if not nsp.spirv_cross(nsp.find_repo(Path(__file__).resolve()), env).is_file():
+        raise nsp.BuildError('The pinned SPIRV-Cross translator is missing from the repository.')
     if not xlate.is_file(): raise nsp.BuildError(f'Shader translator missing: {xlate}')
 
 
@@ -88,10 +90,11 @@ def main(args=None):
     if env_file and not env_file.is_file(): raise nsp.BuildError(f'Environment file not found: {env_file}')
     xlate = repo / 'dm/gfx/tools/dmsh_xlate_bin/dmsh_xlate'
     check_prereqs(env, xlate)
+    nsp.check_metal(sys.executable, repo, env)
     # Keep temporary jobs and the host compiler's module cache on the game's drive.
     env.update(DM_GAME=g.id, DM_ROOT=str(work), WORK=str(work / 'tmp'), TMPDIR=str(work / 'tmp'),
                CLANG_MODULE_CACHE_PATH=str(work / 'tools/clang_modules'),
-               MACOSX_DEPLOYMENT_TARGET='26.0', FONT_PY=sys.executable)
+               MACOSX_DEPLOYMENT_TARGET='26.6', FONT_PY=sys.executable)
     env.pop('IOSOUT', None)   # A Mac-only run must not inherit an iOS build request.
     picks = nsp.pick_nsps(fam, nsp.nsp_versions(fam, g.builds()), versions)
     gb = sum({p.stat().st_size for b, u in picks.values() for p in (b, u) if p}) / 2**30 + 6
@@ -100,11 +103,10 @@ def main(args=None):
     ex.mkdir(parents=True, exist_ok=True); (work / 'tmp').mkdir(exist_ok=True)
     nsp.say(f'Game profile: {g.id}; output app: {out}')
     nx = nsp.build_nx_extract(repo, work, logs, env)
-    dirs, clone = {}, None
+    dirs = {}
     for ver in versions:
         base, update = picks[ver]
-        dirs[ver] = nsp.extract(nx, keys, ex, ver, base, update, clone, logs, g)
-        if update is None and clone is None and nsp.can_clone(ex): clone = dirs[ver] / 'RomFS'
+        dirs[ver] = nsp.extract(nx, keys, ex, ver, base, update, None, logs, g)
     mismatches = [f'{v}: {item}' for v in versions for item in nsp.build_mismatch(dirs[v], v, g)]
     if mismatches: raise nsp.BuildError('The extracted modules do not match the registered builds: ' + '; '.join(mismatches))
     game = dirs[pkg]
@@ -122,17 +124,18 @@ def main(args=None):
     if g.get('shader_glslc_capture', 'off') == 'on':
         nsp.capture_glslc(repo, {v: dirs[v] for v in need}, pkg, patched, work, env, logs, g)
     sh = work / 'shader'
-    package_key = nsp.split_shaders(sys.executable, repo, [dirs[v] / 'RomFS' for v in need],
-                      [dirs[v] / 'ExeFS/main' for v in need], sh / 'pkg', env, logs, g)
-    nsp.build_shaders(sys.executable, repo, sh, xlate, env, logs, g, package_key, with_ios=False)
+    package_key = nsp.split_shaders(sys.executable, repo, [nsp.rfs.source(dirs[v]) for v in need],
+                      [dirs[v] / 'ExeFS/main' for v in need], sh / 'pkg', env, logs, g, dlc_roms=sorted(p for p in aoc.iterdir() if p.is_dir() or p.suffix == '.img') if aoc else [])
+    nsp.build_shaders(sys.executable, repo, sh, xlate, env, logs, g, package_key, mac=True)
     icon = next((d / 'icon.jpg' for d in (game, base) if (d / 'icon.jpg').is_file()), None)
     if not icon: nsp.say('【红】No extracted game icon; the app will use the generic icon. Re-extract to restore it.')
     nsp.say('Packaging the Mac app (game files, macOS shaders, fonts and local signature)')
+    pso = nsp.mac_pso(sys.executable, repo, work, sh / 'cache' / f'b-{nsp.chain_of(repo)}', g, '', env, logs) if g.table('shader_pairs.tsv').is_file() else None
     try:
-        minimum = package_app.build_app(repo, work, out, g, patched, game / 'RomFS', sh / 'cache',
+        minimum = package_app.build_app(repo, work, out, g, patched, nsp.rfs.source(game), sh / 'cache',
                                         app_name, bundle_id, g.builds()[pkg]['display'], icon, aoc,
                                         env_file, env, nsp.run, nsp.can_clone,
-                                        controller_ui=getattr(args, 'controller_ui', None))
+                                        controller_ui=getattr(args, 'controller_ui', None), pso=pso)
     except package_app.PackageError as e: raise nsp.BuildError(str(e)) from e
     nsp.rmtree(work / 'tmp')
     if not args.keep_extracted: nsp.rmtree(ex)

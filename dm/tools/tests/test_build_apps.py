@@ -4,6 +4,8 @@ Compiler/extractor calls use synthetic fixtures; no game files or signing needed
 """
 import os
 import re
+import struct
+import shutil
 import sys
 import tempfile
 import unittest
@@ -27,11 +29,12 @@ class SharedBuildTests(unittest.TestCase):
         self.nsp_dir = self.root / "玩家's game"; self.nsp_dir.mkdir()
         self.g = game.load('010015100B514000')
         self.chain = re.search(r'#define DMSH_CHAIN "([^"]+)"', (REPO / 'dm/gfx/nvn/dmsh_chain.h').read_text()).group(1)
-        (self.nsp_dir / f'Base [{self.g.id}][v0].nsp').write_bytes(b'synthetic fixture')
-        (self.nsp_dir / 'Update [010015100B514800][v327680].nsp').write_bytes(b'synthetic fixture')
+        (self.nsp_dir / f'Base [{self.g.id}][v0].nsp').write_bytes(b'PFS0' + bytes(12))
+        (self.nsp_dir / 'Update [010015100B514800][v327680].nsp').write_bytes(b'PFS0' + bytes(12))
         self.keys = self.root / 'fixture.keys'; self.keys.write_text('# no key values\n')
         self.work = self.nsp_dir / f'{self.g.id}_build'
         self.events = []
+        self.image_romfs = False
         self.fail_target = None
         self.mocks = {}
 
@@ -41,6 +44,11 @@ class SharedBuildTests(unittest.TestCase):
             (out / 'ExeFS').mkdir(parents=True, exist_ok=True)
             (out / 'RomFS').mkdir(exist_ok=True)
             (out / 'RomFS/payload').write_text('synthetic resource')
+            if self.image_romfs:
+                payload=b'synthetic resource'; name=b'payload'
+                index=struct.pack('<QQIHBB',1,1,0,0,0,0)+struct.pack('<QQIHBB',32,len(payload),0,len(name),1,0)+name
+                (out/'RomFS.img').write_bytes(struct.pack('<8sQQQ',b'DMROMFS1',32+len(payload),len(index),2)+payload+index)
+                shutil.rmtree(out/'RomFS')
             (out / 'ExeFS/main').write_bytes(b'synthetic module')
             (out / 'icon.jpg').write_bytes(b'synthetic icon')
             return out
@@ -65,7 +73,7 @@ class SharedBuildTests(unittest.TestCase):
                 Path(cmd[-1]).write_bytes(b'synthetic IPA')
             else: self.fail(f'Unexpected subprocess: {cmd}')
 
-        def mock_mac(repo, work, out, *rest):
+        def mock_mac(repo, work, out, *rest, **kwargs):
             self.events.append('macos')
             self.assertTrue((work / 'extract').is_dir())
             self.assertTrue((work / 'tmp').is_dir())
@@ -74,12 +82,13 @@ class SharedBuildTests(unittest.TestCase):
             return '26.0'
 
         patches = [
+            ('mac_pso', {'return_value': None}), ('shader_regressions', {}),
             ('build_nx_extract', {'return_value': self.root / 'nx_extract'}),
             ('extract', {'side_effect': mock_extract}),
             ('extract_aoc', {'return_value': None}),
             ('rewrite', {}), ('split_shaders', {'return_value': None}), ('build_mismatch', {'return_value': []}), ('chain_header', {'side_effect': lambda *args: self.events.append('chain-header')}), ('chain_tables', {'return_value': True}), ('run', {'side_effect': mock_run}),
             ('can_clone', {'return_value': False}), ('free_gb', {'return_value': 1000}),
-            ('check_prereqs', {}), ('say', {})]
+            ('check_prereqs', {}), ('check_metal', {}), ('say', {})]
         for name, opts in patches:
             p = patch.object(build.nsp, name, **opts)
             self.mocks[name] = p.start(); self.addCleanup(p.stop)
@@ -104,6 +113,7 @@ class SharedBuildTests(unittest.TestCase):
         self.mocks['split_shaders'].assert_called_once()
         self.mocks['extract_aoc'].assert_called_once()
         shaders = self.shader_calls(); self.assertEqual(len(shaders), 1)
+        self.assertEqual(shaders[0].kwargs['env']['DMSH_TARGETS'], 'mac,ios')
         self.assertEqual(shaders[0].kwargs['env']['IOSOUT'], str(self.work / 'shader/ios'))
         self.assertEqual(self.events[-3:], ['shaders', 'macos', 'ios'])
         mac_args = self.mac_pack.call_args.args
@@ -113,6 +123,21 @@ class SharedBuildTests(unittest.TestCase):
         self.assertTrue(app.is_dir()); self.assertTrue(ipa.is_file())
         self.assertFalse((self.work / 'extract').exists())
         self.assertFalse((self.work / 'tmp').exists())
+
+    def test_wrong_metal_compiler_stops_before_shared_preparation(self):
+        self.mocks['check_metal'].side_effect = build.nsp.BuildError('compiler does not match the lock')
+        with self.assertRaisesRegex(build.nsp.BuildError, 'compiler does not match'):
+            build.main(self.args())
+        self.mocks['build_nx_extract'].assert_not_called()
+        self.mocks['extract'].assert_not_called()
+
+    def test_both_targets_receive_the_shared_extractor_image(self):
+        self.image_romfs = True
+        build.main(self.args('--keep-extracted'))
+        source = self.mac_pack.call_args.args[5]
+        self.assertEqual(source.name, 'RomFS.img')
+        self.assertEqual(self.mocks['run'].call_args.kwargs['env']['ROMFS'], str(source))
+        self.assertEqual(self.mocks['split_shaders'].call_args.args[2][0].name, 'RomFS.img')
 
     def test_macos_only_needs_no_ios_tools_and_does_not_compile_ios_shaders(self):
         build.main(self.args('--target', 'macos'))

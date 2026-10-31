@@ -21,7 +21,7 @@ HLE_FORCE("_ZN2nn7account12ListAllUsersEPiPNS0_3UidEi", "全部用户列表；�
     if (max > 0) { out[0] = k_uid; *n = 1; }
     return RES_OK;
 }
-HLE_FORCE("_ZN2nn7account16ShowUserSelectorEPNS0_3UidERKNS0_21UserSelectionSettingsE", "用户选择小程序；宿主直接选本地用户", Result, h_acc_ShowSel, Uid *out, const void *settings) {
+HLE_FORCE("_ZN2nn7account16ShowUserSelectorEPNS0_3UidERKNS0_21UserSelectionSettingsE", "用户选择小程序；宿主直接选本地用户", Result, h_acc_ShowSel, Uid *out, const void *settings) { DM_APPLET("user selector");
     (void)settings; *out = k_uid; return RES_OK;
 }
 // Take the users the system opened on the application's behalf (Mario 1.2.1 asks this first and falls back to TryOpenPreselectedUser on 0; the game only reads the count, not the return value):
@@ -96,7 +96,7 @@ HLE_FORCE("_ZN2nn7account18ListQualifiedUsersEPiPNS0_3UidEi", "可用用户列�
 HLE_FORCE("_ZN2nn7account16GetUserExistenceEPbRKNS0_3UidE", "用户是否存在；本地用户为真", Result, h_acc_Exists, uint8_t *out, const Uid *uid) {
     *out = uid->v[0] == k_uid.v[0] && uid->v[1] == k_uid.v[1]; return RES_OK;
 }
-HLE_FORCE("_ZN2nn7account15ShowUserCreatorEv", "新建用户小程序；宿主已有本地用户", Result, h_acc_ShowCreator, void) { return RES_OK; }
+HLE_FORCE("_ZN2nn7account15ShowUserCreatorEv", "新建用户小程序；宿主已有本地用户", Result, h_acc_ShowCreator, void) { DM_APPLET("user creator"); return RES_OK; }
 HLE_FORCE("_ZN2nn7account16LoadProfileImageEPmPvmRKNS0_3UidE", "用户头像；宿主没有（失败）", Result, h_acc_LoadImage, uint64_t *n, void *buf, uint64_t sz, const Uid *uid) {
     (void)buf; (void)sz; (void)uid; if (n) *n = 0; return RES_FAIL;
 }

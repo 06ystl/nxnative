@@ -16,3 +16,7 @@ void dm_ctl_peek(uint64_t address, int n) { (void)address; (void)n; abort(); }
 void dm_ctl_memdump(uint64_t address, uint64_t n, const char *path) { (void)address; (void)n; (void)path; abort(); }
 void dm_ctl_cvar_i32(uint64_t offset, int32_t value) { (void)offset; (void)value; abort(); }
 void dm_ctl_cvar_f32(uint64_t offset, float value) { (void)offset; (void)value; abort(); }
+void crash_dump_now(void) { abort(); }
+void dm_applet_enter(const char *name) { (void)name; }
+void dm_applet_leave(void) {}
+int hle_signal_bound_system_event(void *event) { (void)event; return 0; }

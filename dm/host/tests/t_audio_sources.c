@@ -3,7 +3,7 @@
 #include "audio_wave_fixture.h"
 static int checks,failed,gate=1;static unsigned calls;
 #define CHECK(c,msg) do{checks++;if(!(c)){failed++;fprintf(stderr,"FAIL: %s\n",msg);}}while(0)
-void gate_obs_set(int id,void(*fn)(const uint64_t*)){(void)id;(void)fn;}
+void gate_obs_set(int id,void(*fn)(uint64_t*,int)){(void)id;(void)fn;}
 int gate_obs_present(int id){return gate&&id==OBS_AUDIO_EVENT;}
 static void ptr(void *p,void *v){uint64_t a=(uintptr_t)v;memcpy(p,&a,8);}
 static void output(const float *p,unsigned n){(void)p;(void)n;calls++;}

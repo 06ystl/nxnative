@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include "game_profile.h"
 #include "../host/controller_ui_mac.h"
+#include "../host/romfs_image.h"
 
 void dm_host_shutdown(const char *why);
 
@@ -74,7 +75,10 @@ int dm_app_bootstrap(int *argc, char ***argv) {
         env_default("DM_ROOT", support);
         env_default("DM_SAVE", [support stringByAppendingPathComponent:@"save"]);
         env_default("DM_TEMP", [support stringByAppendingPathComponent:@"temp"]);
-        env_default("DM_ROMFS", [res stringByAppendingPathComponent:@"romfs"]);
+        NSString *imagePath = [res stringByAppendingPathComponent:@"romfs.img"];
+        env_default("DM_ROMFS", [fm fileExistsAtPath:imagePath] ? imagePath : [res stringByAppendingPathComponent:@"romfs"]);
+        if ([fm fileExistsAtPath:[res stringByAppendingPathComponent:@"pso"]])
+            env_default("DM_PSO_BUNDLE", [res stringByAppendingPathComponent:@"pso"]);
         env_default("DM_MSL_DIR", [res stringByAppendingPathComponent:@"msl"]);
         env_default("DM_NVN_SHMAP", [dm stringByAppendingPathComponent:@"shader_map.tsv"]);
         env_default("DM_FONT_DIR", [dm stringByAppendingPathComponent:@"font"]);
@@ -86,8 +90,11 @@ int dm_app_bootstrap(int *argc, char ***argv) {
             if (![fm createDirectoryAtPath:@(getenv(*key)) withIntermediateDirectories:YES attributes:nil error:&error])
                 return boot_error(error.localizedDescription);
         }
-        NSString *marker = [@(getenv("DM_ROMFS")) stringByAppendingPathComponent:@DM_GAME_ROMFS_MARKER];
-        if (![fm fileExistsAtPath:marker]) return boot_error([@"Missing game resources: " stringByAppendingString:marker]);
+        NSString *romfs = @(getenv("DM_ROMFS")); BOOL directory = NO;
+        BOOL valid = [fm fileExistsAtPath:romfs isDirectory:&directory];
+        if (valid && directory) valid = [fm fileExistsAtPath:[romfs stringByAppendingPathComponent:@DM_GAME_ROMFS_MARKER]];
+        else if (valid) { romfs_img *image = romfs_image_open(romfs.fileSystemRepresentation); valid = image != NULL; romfs_image_close(image); }
+        if (!valid) return boot_error([@"Missing or invalid game resources: " stringByAppendingString:romfs]);
         if (chdir(support.fileSystemRepresentation)) return boot_error(@"Cannot open the application support folder.");
         // Finder may supply launch-service arguments; modules come from the game profile.
         static char *av[3]; av[0] = (*argv)[0]; av[1] = strdup(dm.fileSystemRepresentation);
