@@ -211,11 +211,63 @@ its own bundle ID. It keeps the controller-UI patch beside the test App;
 normal startup controller selection still applies. Its bundled defaults are
 native 1440p and 60 fps. It has not replaced the formal App.
 
-**Foreground validation remains pending.** The `opt-window-a` trial ran while
-macOS was locked: all measured frames were dropped and no requested screenshot
-was produced. That run is invalid presentation evidence. Keep the formal
-v4.20 App until a visible candidate run verifies scene/HUD colours, display
-intervals and long frames at native 1440p. Other games and iOS were not tested.
+**Foreground validation (current, fixed camera).** The Mac was unlocked and
+the packaged Apps ran visibly from independent save copies. Internal scene
+rendering remained 2560x1440. On the built-in screen (3024x1898 drawable),
+`fullscreen-control-a` measured 54.3 fps and `fullscreen-final-a` 58.0 fps over
+seconds 80–140. Both had zero discarded frames; displayed p95 was 25 ms in
+both. Display intervals above 20.84 ms fell from 689/3256 to 293/3477, but the
+candidate also had four intervals above 29.2 ms (maximum 41.67 ms), versus
+none in that control. Its corresponding render-frame times were below 20 ms,
+with no new pipeline/library builds at those intervals, so these were actual
+presentation irregularities, not shader-compile stalls.
+
+A repeat on the external screen exposed a separate ceiling:
+[classic minimum-duration rounding](../../../docs/reference/frame-rate.md#classic-minimum-duration-limits-60-fps-to-48-on-a-144-hz-screen).
+The screen is 3840x2160 at 144 Hz and exposes no same-size mode at a multiple
+of 60 Hz. `fullscreen-final-b` stayed at 48.0 fps, with median GPU 15.45 ms
+and actual display intervals of 20.85 ms. Extending fullscreen mode matching
+to the classic path alone (`external-refresh-fix`) still gave 48.0 fps and
+the log correctly reported no compatible screen mode. The final fix permits
+two/three physical refreshes while the existing host clock keeps the logical
+60 fps cap; the display-link path and game time are unchanged.
+
+| External 144 Hz run | Generated fps | Displayed p50 / p95 / p99 / max, ms | Render p50 / p95 / p99 / max, ms | Discarded | Render frames over 25 ms |
+|---|---:|---|---|---:|---:|
+| Mode matching only, external-refresh-fix | 48.0 | 20.85 / 20.85 / 27.80 / 27.80 | 20.87 / 22.58 / 23.57 / 39.73 | 0 | 8 |
+| Correct physical minimum, external-minimum-fix | 57.6 | 13.90 / 20.85 / 20.85 / 27.80 | 17.07 / 19.42 / 20.96 / 21.99 | 0 | 0 |
+
+Both external runs used the same seed, view, 2K scene dimensions, 4K drawable,
+144 Hz screen and production compiler flags. A ready-file handshake started
+each 60-second measurement only after the user confirmed external fullscreen;
+the measured offsets were 303.49–363.49 s and 141.90–201.90 s, respectively.
+Weather/animation and game time were not frozen, so these establish removal
+of the fixed 48 fps ceiling, not an exact percentage gain in equal GPU work.
+The final mean GPU time was 16.07 ms. Every one of its 3458 measured frames
+had a positive display callback. Scene and inventory screenshots were
+inspected; the screen stayed at 144 Hz because no mode was changed. There
+was therefore no physical mode switch to restore in this external test.
+
+The physical-refresh correction passes 21 `t_pace` checks, including a
+600-interval model, and the classic refresh requests pass the production
+`t_present_rescue` cases (54 CPU checks; 58 with the real Metal lifecycle).
+`t_link_ticks` passes 29 checks. LLVM 23.1.4 reports no file/check pair above
+the lint baseline. No new environment variable was introduced.
+
+Excluded presentation evidence: `opt-window-a` ran while locked (all measured
+frames discarded); `visible-app-control` included fullscreen-transition drops;
+`fullscreen-link2-a` did not retain the same fullscreen/display state, and a
+subsequent UI reconnect opened a separate title-screen instance, which was
+closed before the next benchmark. Those runs do not justify changing the
+present-link default. The initial `visible-control-a` is a windowed probe.
+The built-in `fullscreen-refresh-fix` run is separate from the external
+screen comparisons. Configurations, summaries, logs and screenshots remain
+under the named run directories in `perf-v4.21`.
+
+The latest test App above contains the physical-refresh fix and retains its
+independent save. The formal v4.20 App has not been replaced. Stable 60 fps
+at native 1440p remains open: the final external render p95 is 19.42 ms,
+above the 16.67 ms budget. Other scenes, games and iOS were not tested.
 
 ## Rendering
 
@@ -386,6 +438,7 @@ Before publishing, the fixes were integrated with main's pipeline archive and GP
 ## Found on this game
 
 - **Native 1440p optimization:** [Hot complete-state pipelines](../../../docs/reference/shaders.md#hot-metal-4-pipelines-compile-with-complete-colour-state), [dependency-proven vertex/fragment overlap](../../../docs/reference/rendering.md#independent-vertex-work-overlaps-earlier-fragment-work), and [feedback texture usage](../../../docs/reference/rendering.md#feedback-snapshots-request-format-views-only-when-needed). Matched workloads and remaining presentation validation are recorded [above](#mac-1440p-pipeline-and-stage-optimization).
+- **Resolved, external 144 Hz display held classic presents to 48 fps:** [Classic minimum duration on non-matching screens](../../../docs/reference/frame-rate.md#classic-minimum-duration-limits-60-fps-to-48-on-a-144-hz-screen); the same native 2K scene now presents about 57.6 fps on that screen.
 
 - **Resolved, two stale chain folders held 4.4 GB:** [Old shader library folders grew a game's build folder with each chain change](../../../docs/reference/shaders.md#old-shader-library-folders-grew-a-games-build-folder-with-each-chain-change).
 - **Resolved: 1.6.0 (v786432) crashed 10-60 s into the first scene (issue #251)** in `h_nvnBufferGetAddress` (`main+0x14ef6e0`, reader `main+0x14ef440`) and in other places (`main+0x12970dc`, `+0x13615f4`, `+0x1445d48`, `+0x1db5cb8`, `+0x1472470`): the game's job queue (`main+0x13a0730`) takes its lock with a bare `ldxr` (no acquire), so on Apple cores two workers popped the same job, and two threads built draw lists into one view and arena (`main+0x14e8884` begin, commit `main+0x14ee3c0`). [Lock acquire without acquire ordering runs a queue item twice](../../../docs/reference/threads.md#lock-acquire-without-acquire-ordering-runs-a-queue-item-twice).

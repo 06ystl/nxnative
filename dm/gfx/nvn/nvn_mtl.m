@@ -30,6 +30,7 @@
 #include "nvn_border.h"
 #include "nvn_primitive.h"
 #include "nvn_timestamp.h"
+#include "nvn_pace.h"
 #include "dmsh_chain.h"   // DMSH_CHAIN: the translation chain version of the B shader library expected by this source tree, one for every game (beside this file, tools/dmsh_chain.py --header)
 #include "game_profile.h"   // game profile constants (profile id, the profile's switches)
 // Texture slot table per stage: 0-127 the combined handles (nvnCommandBufferBindTexture), 128-255 the separate texture binds (NVN_SEPTEX_SLOT0, nvn_obj.h)
@@ -11552,6 +11553,7 @@ static void present_gpu_note(double s, int fx) {
     n[fx] = 0;
 }
 static double g_link_it_tin;   // Enqueue time of the frame the display-link callback is presenting (read and written only on the display-link thread)
+__attribute__((weak)) int front_screen_max_fps(void) { return 0; }   // front_mac.m; graphics unit tests and iOS have none
 static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t ticket, const int crop[4], id<CAMetalDrawable> supplied, double target_ts) {
     if (g_present_stall_ns) { struct timespec ts = {0, (long)g_present_stall_ns}; nanosleep(&ts, NULL); }
     g_present_n++;
@@ -11664,9 +11666,9 @@ static int present_now(const tex_t *t, double period, uint64_t frame, uint64_t t
         CFTimeInterval tt = d.presentedTime;
         g_pres[pn % PRING] = (pres_ent){pn, tt > 0 ? tt : -1};
     }];
-    // Each frame is displayed for at least one present period: when the GPU completion time jitters around a 120 Hz refresh boundary, the paired "25 ms + 8.33 ms" stutter no longer appears
+    // Preserve the minimum hold on matching displays (avoids paired 25/8.33 ms jitter at 120 Hz). On non-matching displays the host still paces the logical period, while the drawable permits the nearest physical refreshes (60 fps at 144 Hz needs 2/3 refreshes, not always 3).
     if (target_ts > 0) [dr present];
-    else if (period > 0) [dr presentAfterMinimumDuration:period]; else [dr present];
+    else if (period > 0) [dr presentAfterMinimumDuration:nvn_present_minimum(period, front_screen_max_fps())]; else [dr present];
 #endif
     (void)frame;
     return 1;
@@ -11769,7 +11771,6 @@ static int link_on(void) { return g_dm_present_link && !atomic_load(&g_rescue_mo
 // 55 Hz, and a game paced by the link runs at 55 fps (27.5 at 30). There the link runs at the screen's rate and only the refreshes nearest a steady clock of the wanted rate count as
 // ticks (g_link_vperiod, NvMetalDisplayLinkDelegate): 60 a second on average, each frame shown on the refreshes nearest its 1/60 s slot. DM_LINK_VTICK=0 keeps the system's choice.
 // In fullscreen the Mac front end switches such a screen to a rate that is a multiple where it has one (front_screen_match), and the range is set again for it (link_sync)
-__attribute__((weak)) int front_screen_max_fps(void) { return 0; }   // front_mac.m; graphics unit tests and iOS have none
 __attribute__((weak)) void front_screen_match(int fps) { (void)fps; }   // front_mac.m; graphics unit tests and iOS have none
 static CAFrameRateRange link_range(int mode) {
     static int on = -1; if (on < 0) { const char *e = getenv("DM_LINK_VTICK"); on = !(e && !strcmp(e, "0")); }
@@ -11809,7 +11810,7 @@ static void *link_main(void *arg) {   // Display link thread: started when switc
     g_link_started = 0;
     return NULL;
 }
-static void link_sync(void) {   // Called every frame by the game's present thread: aligns the display link object's state to g_dm_present_link and the power-saving mode (can change at run time)
+static void link_sync(double period) {   // Called every frame by the game's present thread: aligns the display link object's state to g_dm_present_link and the power-saving mode (can change at run time)
     static int applied;
     pthread_mutex_lock(&g_pq_mu);
     int want = g_dm_present_link;
@@ -11821,7 +11822,13 @@ static void link_sync(void) {   // Called every frame by the game's present thre
     if (g_rescue_mode) want = 0;
     pthread_mutex_unlock(&g_pq_mu);
     if (want && mtl_fps_target() == 30) want = 3;   // Power-saving mode: display link at 30 Hz
-    if (want) front_screen_match(dm_game_frame_target()>0 ? dm_game_frame_target() : want == 3 ? 30 : want == 2 ? 120 : 60);
+    // Classic presents also hold each frame for a minimum duration. On a
+    // 144 Hz fullscreen screen, 1/60 s rounds up to three refreshes (48 fps).
+    // Match capped presents too; zero restores the original mode for uncapped
+    // presents. The front end changes only the fullscreen screen, at its size.
+    int frame_target = dm_game_frame_target();
+    int match = frame_target > 0 ? frame_target : want ? (want == 3 ? 30 : want == 2 ? 120 : 60) : period > 0 ? (int)lround(1.0 / period) : 0;
+    front_screen_match(match);
     // The screen's rate changed (switched by front_screen_match, or another screen): the range again, virtual ticks or none. Taken only once the link object exists, so a change
     // while its thread starts (after link_main read the rate) is not lost
     static int hz_was, target_was; int target=dm_game_frame_target(); int hz = front_screen_max_fps(); CAMetalDisplayLink *lk = g_link;
@@ -12022,7 +12029,7 @@ static uint64_t present_enqueue(const tex_t *t, double period, const int crop[4]
     // Resolve it here, where the game queues the present, and commit the batch, so the display command buffer comes after the upload on the queue and the present thread finds it uploaded
     if (t && !ev_val && on_sub_thread() && tex_from_storage(t)) { tex_mtl(t); up_flush(); }
     static pthread_once_t once = PTHREAD_ONCE_INIT; pthread_once(&once, present_start);
-    link_sync();
+    link_sync(period);
     {   // Test switch DM_TEST_LINK_STALL=start seconds,duration seconds: counting from the first present, pause the display link at that point (imitating the display link not calling back while in the foreground) and release it when the duration is up. For verifying the fallback; not set in the product
         static double t0, at = -1, dur; static int st; double now = CACurrentMediaTime();
         if (at < 0) { at = 0; const char *e = getenv("DM_TEST_LINK_STALL"); if (e && sscanf(e, "%lf,%lf", &at, &dur) == 2 && at > 0 && dur > 0) { t0 = now; st = 1; } else at = 0; }

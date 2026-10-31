@@ -22,6 +22,7 @@
 static uint64_t test_now;
 int test_focus = 1;
 int test_fullscreen;
+int test_match_hz;
 uint64_t test_focus_since;
 void *front_metal_layer(void) { return NULL; }
 module_t *module_of(const void *p) { (void)p; return NULL; }
@@ -53,8 +54,8 @@ static void thresholds(void) {
     CHECK("rescue stops display-link pacing", !mtl_link_active());
     g_link = nil;
     uint64_t deadline = g_rescue_back_at;
-    test_now = deadline - 1; link_sync(); CHECK("no retry before 3 s", g_rescue_mode == 1);
-    test_now++; link_sync(); CHECK("retry after 3 s", !g_rescue_mode && g_dm_present_link == 1);
+    test_now = deadline - 1; link_sync(1.0 / 60); CHECK("no retry before 3 s", g_rescue_mode == 1);
+    test_now++; link_sync(1.0 / 60); CHECK("retry after 3 s", !g_rescue_mode && g_dm_present_link == 1);
     CHECK("retry starts a fresh stall clock", !g_stall_t0 && g_link_tick_ns == test_now);
     reset(); test_focus = 2; wait_frame(); CHECK("inactive time does not trigger rescue", !g_rescue_mode);
     test_focus = 3; wait_frame(); CHECK("background time does not trigger rescue", !g_rescue_mode);
@@ -68,22 +69,22 @@ static void backoff(void) {
     for (unsigned i = 0; i < sizeof seconds / sizeof seconds[0]; i++) {
         g_stall_t0 = g_link_tick_ns = test_now - 500000000ull; wait_frame();
         CHECK("retry delay doubles and stops at 60 s", g_rescue_back_at - test_now == seconds[i] * 1000000000ull);
-        test_now = g_rescue_back_at; link_sync();
+        test_now = g_rescue_back_at; link_sync(1.0 / 60);
     }
 }
 static void settings(void) {
     for (int mode = 0; mode <= 2; mode += 2) {
         reset(); wait_frame(); g_dm_present_link = mode;
         uint64_t deadline = g_rescue_back_at;
-        link_sync(); CHECK("a new runtime mode ends rescue immediately", !g_rescue_mode);
-        test_now = deadline; link_sync();
+        link_sync(1.0 / 60); CHECK("a new runtime mode ends rescue immediately", !g_rescue_mode);
+        test_now = deadline; link_sync(1.0 / 60);
         CHECK("retry honors a new runtime pacing mode", g_dm_present_link == mode && !g_rescue_mode);
     }
 }
 static void lifecycle(void) {
     reset(); SilentDisplayLink *link = [SilentDisplayLink new];
     g_link = link; g_link_started = 1; g_link_rl = CFRunLoopGetCurrent();
-    link_sync(); wait_frame(); link_sync();
+    link_sync(1.0 / 60); wait_frame(); link_sync(1.0 / 60);
     CHECK("layer stays with the link until its run loop invalidates it", g_link_owns_layer);
     CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, false);
     CHECK("rescue invalidates the link before releasing the layer", link.invalidated && !g_link && !g_link_owns_layer);
@@ -93,14 +94,22 @@ static void latency(void) {   // frame latency 1 in a window, 2 in fullscreen, D
     reset(); test_fullscreen = 0; g_present_latency = 0;
     SilentDisplayLink *link = [SilentDisplayLink new]; link.preferredFrameLatency = link_latency();
     g_link = link; g_link_started = 1;
-    link_sync(); CHECK("a window keeps frame latency 1", link.preferredFrameLatency == 1);
-    test_fullscreen = 1; link_sync(); CHECK("entering fullscreen sets frame latency 2", link.preferredFrameLatency == 2);
-    test_fullscreen = 0; link_sync(); CHECK("leaving fullscreen sets frame latency 1 again", link.preferredFrameLatency == 1);
+    link_sync(1.0 / 60); CHECK("a window keeps frame latency 1", link.preferredFrameLatency == 1);
+    test_fullscreen = 1; link_sync(1.0 / 60); CHECK("entering fullscreen sets frame latency 2", link.preferredFrameLatency == 2);
+    test_fullscreen = 0; link_sync(1.0 / 60); CHECK("leaving fullscreen sets frame latency 1 again", link.preferredFrameLatency == 1);
     test_fullscreen = 1; link = [SilentDisplayLink new]; link.preferredFrameLatency = link_latency(); g_link = link;
-    link_sync(); CHECK("a link created in fullscreen keeps frame latency 2", link.preferredFrameLatency == 2);
-    g_present_latency = 3; link_sync(); CHECK("DM_PRESENT_LATENCY wins in fullscreen", link.preferredFrameLatency == 3);
-    test_fullscreen = 0; link_sync(); CHECK("DM_PRESENT_LATENCY wins in a window", link.preferredFrameLatency == 3);
-    g_present_latency = 0; test_fullscreen = 0; link_sync(); g_link = nil; g_link_started = 0;
+    link_sync(1.0 / 60); CHECK("a link created in fullscreen keeps frame latency 2", link.preferredFrameLatency == 2);
+    g_present_latency = 3; link_sync(1.0 / 60); CHECK("DM_PRESENT_LATENCY wins in fullscreen", link.preferredFrameLatency == 3);
+    test_fullscreen = 0; link_sync(1.0 / 60); CHECK("DM_PRESENT_LATENCY wins in a window", link.preferredFrameLatency == 3);
+    g_present_latency = 0; test_fullscreen = 0; link_sync(1.0 / 60); g_link = nil; g_link_started = 0;
+}
+static void classic_screen_match(void) {
+    reset(); g_link = nil; g_link_started = 0; g_dm_present_link = 0;
+    link_sync(1.0 / 60); CHECK("classic 60 fps requests fullscreen refresh matching", test_match_hz == 60);
+    link_sync(1.0 / 30); CHECK("classic 30 fps keeps its own period", test_match_hz == 30);
+    link_sync(1.0 / 59.94); CHECK("fractional classic refresh rounds to its display rate", test_match_hz == 60);
+    link_sync(0); CHECK("uncapped classic presents release refresh matching", test_match_hz == 0);
+    CHECK("classic refresh matching creates no display link", !g_link && !g_link_started && !g_dm_present_link);
 }
 static void metal_lifecycle(void) {
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
@@ -110,7 +119,7 @@ static void metal_lifecycle(void) {
     reset(); g_link = [[NSClassFromString(@"CAMetalDisplayLink") alloc] initWithMetalLayer:layer];
     g_link.paused = YES; [g_link addToRunLoop:[NSRunLoop currentRunLoop] forMode:NSDefaultRunLoopMode];
     g_link_started = 1; g_link_rl = CFRunLoopGetCurrent();
-    link_sync(); wait_frame(); link_sync();
+    link_sync(1.0 / 60); wait_frame(); link_sync(1.0 / 60);
     CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, false);
     CHECK("real link releases the layer during rescue", !g_link && !g_link_owns_layer);
     id<CAMetalDrawable> drawable = [layer nextDrawable];
@@ -120,7 +129,7 @@ static void metal_lifecycle(void) {
 int main(int argc, char **argv) { @autoreleasepool {
     alarm(10); setbuf(stdout, NULL);
     if (argc > 2 || (argc == 2 && strcmp(argv[1], "--metal"))) return 2;
-    thresholds(); backoff(); settings(); lifecycle(); latency();
+    thresholds(); backoff(); settings(); lifecycle(); latency(); classic_screen_match();
     if (argc == 2) metal_lifecycle();
     printf("present rescue: %d checks, %d failed\n", checks, failed); return failed != 0;
 } }

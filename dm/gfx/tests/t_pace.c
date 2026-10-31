@@ -23,6 +23,30 @@ int main(void) {
         printf("%-52s expected wait %8.3f ms → got %8.3f ms %s\n", c[i].why, c[i].want / 1e6, got / 1e6, ok ? "✓" : "✗");
         fail += !ok;
     }
+    struct { double period; int hz; double want; } physical[] = {
+        {1.0/60,120,1.0/60}, {1.0/30,120,1.0/30},
+        {1.0/60,144,2.0/144}, {1.0/30,144,4.0/144},
+        {1.0/60,165,2.0/165}, {1.0/120,144,1.0/144},
+        {0,144,0}, {1.0/60,0,1.0/60}, {1.0/240,144,0}
+    };
+    for (unsigned i=0;i<sizeof physical/sizeof *physical;i++) {
+        double got=nvn_present_minimum(physical[i].period,physical[i].hz);
+        int ok=fabs(got-physical[i].want)<1e-12; fail+=!ok;n++;
+        printf("physical hold at %d Hz: %.9f s %s\n",physical[i].hz,got,ok?"PASS":"FAIL");
+    }
+    // Ideal 60 fps arrivals on a 144 Hz display. The presentation model rounds
+    // each arrival and minimum hold up to a physical refresh, independently of
+    // the host's duration calculation. 600 intervals should span 10 seconds.
+    for (int original=0;original<2;original++) {
+        double hold=original?1.0/60:nvn_present_minimum(1.0/60,144);
+        int ticks=(int)ceil(hold*144-1e-9),last=0;
+        for(int frame=1;frame<=600;frame++) {
+            int arrival=(frame*144+59)/60;
+            last=arrival>last+ticks?arrival:last+ticks;
+        }
+        int ok=last==(original?1800:1440);fail+=!ok;n++;
+        printf("144 Hz cadence %s: 600 intervals span %.3f s %s\n",original?"original":"corrected",last/144.0,ok?"PASS":"FAIL");
+    }
     printf("== %d checks, %d failed ==\n", n, fail);
     return fail != 0;
 }

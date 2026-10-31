@@ -6,3 +6,6 @@ int dm_focus_now(void) { return test_focus; }
 uint64_t dm_focus_in_since(void) { return test_focus_since; }
 extern int test_fullscreen;
 int front_fullscreen(void) { return test_fullscreen; }
+
+extern int test_match_hz;
+void front_screen_match(int fps) { test_match_hz = fps; }
