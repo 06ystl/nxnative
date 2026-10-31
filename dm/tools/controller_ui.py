@@ -453,6 +453,12 @@ def adapt_action_prompt(original, button, left_caption):
                 struct.pack_into('<H', data, at+90, font_index)
                 text = struct.unpack_from('<I', original, at+100)[0]
                 struct.pack_into('<H', data, at+text, FACE_GLYPHS[parts[1]])
+                # Letter hints use a condensed font width. Button glyphs have
+                # square metrics: keep their height and give them equal width.
+                height = struct.unpack_from('<f', original, at+116)[0]
+                struct.pack_into('<f', data, at+112, height)
+                pane_height = struct.unpack_from('<f', original, at+80)[0]
+                struct.pack_into('<f', data, at+76, max(pane_height, height))
     if button == 'X':
         templates = {r['name']: r for r in layout_panes(left_caption)}
         replacements = {

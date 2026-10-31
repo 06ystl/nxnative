@@ -32,6 +32,7 @@ class ControllerUIConversionTests(unittest.TestCase):
                 struct.pack_into('<I', data, 100, 168)
                 data[92] = 2 if button == 'Y' else 1
                 data[180:184] = button.encode()*4  # text payload
+                struct.pack_into('<ff', data, 112, 17, 25.5)
             if kind == b'wnd1' and button == 'Y':
                 struct.pack_into('<f', data, 68, -1)
             return data
@@ -85,6 +86,9 @@ class ControllerUIConversionTests(unittest.TestCase):
                         if parts[1] in ui.FACE_GLYPHS:
                             self.assertEqual(struct.unpack_from('<H', result, at+90)[0], 1)
                             self.assertEqual(struct.unpack_from('<H', result, at+168)[0], ui.FACE_GLYPHS[parts[1]])
+                            width, height = struct.unpack_from('<ff', result, at+112)
+                            self.assertEqual((width, height), (25.5, 25.5))
+                            self.assertGreaterEqual(struct.unpack_from('<f', result, at+76)[0], width)
 
     def test_contextual_prompt_reuses_its_external_font_reference(self):
         result, index = ui.action_prompt_font(self.action_prompt('A'))

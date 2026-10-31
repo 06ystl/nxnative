@@ -619,6 +619,8 @@ cross below, circle right, square left and triangle above. Their highlighted
 button, inactive symbols and caption move together; square uses the game's
 left-facing caption frame. Input bindings and prompt animations are retained.
 Inactive symbols use BotW's existing External font, with the converted PS5 glyphs.
+Their font width equals their height, and their panes allow the full glyph width;
+the original condensed letter metrics would distort the button shapes.
 The extra font references grow the layouts slightly; the converter increases only
 `Layout/Common.blarc`'s resource-size-table entry by the aligned archive growth,
 preserving its original overhead and all other allocation entries.
