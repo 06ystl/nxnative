@@ -550,6 +550,71 @@ lock-on. Production output is tested through fake native endpoints, with no
 physical effects sent automatically. The user confirmed USB shield resistance
 in v4.12.2; the short durability-impact feel remains unverified.
 
+### Mac controller UI at startup
+
+A prepared UI patch is installed with `--controller-ui <directory>` in either
+`scripts/build_mac_app_from_nsp.py` or `scripts/build_apps_from_nsp.py` (macOS
+output only). The directory contains `manifest.tsv`, `ATTRIBUTION.txt` and a
+`romfs/` tree. Its first manifest line is `game\t<base title ID>`, ending in a
+newline. The packager checks the game ID and installs the directory at
+`patches/dualsense-ui/` beside the output App. It stays outside the signed bundle;
+removing it and restarting restores original UI. A rebuild without this option
+leaves an existing external patch in place. Generated game/mod resources stay on
+the game's drive and out of the source repository.
+
+`controller_ui_mac.c` selects that optional overlay before the guest starts and
+mounts RomFS. The bundle bootstrap supplies the actual App path, so moving the
+App and its neighbouring `patches/` together keeps the patch usable. Patch lookup
+does not depend on `DM_ROMFS` overrides. The active 1P profile must be
+`GCDualSenseGamepad`, as reported by
+Apple over USB or Bluetooth. Explicit `DM_ROMFS_OVERLAY` roots retain their first
+priority; the automatic UI root follows them. Other controllers and keyboard-only
+starts retain original resources. This does not change input mapping or feedback.
+
+Apple may report an already-connected controller asynchronously after the first
+registry query. When a compatible UI pack is installed, startup waits for the
+first extended profile, or completes after one second with the current registry.
+A single completion selects the UI and starts the guest. Apps without a UI pack
+keep their original startup path. The choice is fixed for the session because the
+game caches font and layout resources; changing controllers requires restart.
+Tests cover delayed discovery, timeout, single completion, game-ID matching,
+read-only overlay loading, removal of the patch and preservation of explicit user
+overlay priority. An installed patch remains inactive for other controllers.
+
+UI archives are specific to the game and platform. A donor mod must be adapted
+and visually checked against the target's fonts, button mapping and layout;
+whole archives from another title are not compatible replacements. Include source
+author attribution and follow its redistribution terms for generated assets.
+
+For BotW, `scripts/build_ps5_ui.py` adapts the locally supplied **Dualsense
+Controller UI** v1 by Gantz79 (Nexus TotK mod 123):
+
+```sh
+python3 scripts/build_ps5_ui.py --romfs /path/to/BotW/romfs \
+  --mod '/path/to/Dualsense Controller UI.rar' \
+  --dictionary /path/to/TotK/romfs/Pack/ZsDic.pack.zs --out /game-drive/ps5-ui
+```
+
+The converter requires Pillow, oead, `zstd`, and `bsdtar` for RAR input; an
+extracted mod directory is also accepted. It reads the supplied game's compression
+dictionary, decodes the donor's vector font and BC7 artwork, and transfers selected
+glyphs and textures into BotW's own archives. Cross/circle/square/triangle correspond
+to A/B/X/Y in the Mac input adapter. BotW's language-font payloads and decompressed
+resource sizes are retained. Pass the resulting directory to `--controller-ui` when
+packaging. Generated assets and dictionaries belong on the game drive, outside Git.
+The control diagram reuses BotW's guide-line, endpoint and button-cluster
+sprites, routed to the DualSense artwork's actual sticks, D-pad, face cluster,
+Create/Options buttons and L1/L2/R1/R2 positions, coloured warm white. Basic controls
+place the D-pad's three labels between Create and movement/crouch. Horse and
+sand-seal label positions are retained; mirrored pane groups are accounted for.
+Layout offsets, guide colour and cluster outline sizes are grouped at the top of
+`dm/tools/controller_ui.py`. The converter records these output details in
+`conversion.json` alongside the patch.
+
+An existing compatible App can use the generated patch without rebuilding:
+copy the complete output directory to `patches/dualsense-ui/` beside the App,
+connect the DualSense and restart. Keep `manifest.tsv` at that directory's root.
+
 ### Mac audio-event haptics
 
 `audio_sources_mac.c` observes the common sound-event creation gate
