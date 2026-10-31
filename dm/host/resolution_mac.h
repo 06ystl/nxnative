@@ -5,3 +5,4 @@
 // Unset DM_GAME_RES and profiles without presets keep their original behavior.
 int dm_resolution_mac_patch(const module_t *module, uint8_t *image, size_t length);
 int dm_resolution_mac_has_presets(const char *build);
+int dm_resolution_mac_has_qhd(const char *build);

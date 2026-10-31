@@ -168,6 +168,8 @@ static DmQuickSettings *settings;
     self.resolution=[[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     if(dm_resolution_mac_has_presets(dm_main_build())) {
         [self popup:self.resolution title:text(@"Game default",@"游戏默认") value:@""];
+        if(dm_resolution_mac_has_qhd(dm_main_build()))
+            [self popup:self.resolution title:@"2560 × 1440 (2K)" value:@"2560x1440"];
         [self popup:self.resolution title:@"1920 × 1080" value:@"1920x1080"];
         [self popup:self.resolution title:@"1280 × 720" value:@"1280x720"];
     } else [self popup:self.resolution title:text(@"Game default",@"游戏默认") value:nil];

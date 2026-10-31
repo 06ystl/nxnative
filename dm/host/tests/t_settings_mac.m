@@ -17,6 +17,7 @@ void dm_motion_mac_calibrate_now(void){calibrations++;}
 void dm_motion_mac_connect_phone(void){}
 int dm_game_frame_target(void){return 60;}
 int dm_resolution_mac_has_presets(const char *b){(void)b;return 1;}
+int dm_resolution_mac_has_qhd(const char *b){(void)b;return 1;}
 void dm_mac_input_settings_window(NSWindow *w){(void)w;}
 @interface FixturePreferences : NSUserDefaults
 @property NSMutableDictionary *values;
@@ -64,6 +65,8 @@ int main(int argc,char **argv){@autoreleasepool{
     [settings.resolution selectItemWithTitle:@"1280 × 720"];[settings.fps selectItemWithTitle:@"120 FPS"];settings.hud.state=NSControlStateValueOff;[settings displayChanged:nil];
     CHECK([read_text(path) containsString:@"DM_GAME_RES=1280x720"]&&[read_text(path) containsString:@"DM_FPS=120"]&&[read_text(path) containsString:@"DM_METAL_HUD=0"],"display selections persist for the next launch");
     CHECK(!strcmp(getenv("DM_GAME_RES"),"1920x1080")&&!strcmp(getenv("DM_FPS"),"60")&&feedback.audio==70,"restart-only changes leave the running game and live controls intact");
+    [settings.resolution selectItemWithTitle:@"2560 × 1440 (2K)"];[settings displayChanged:nil];
+    CHECK([read_text(path) containsString:@"DM_GAME_RES=2560x1440"]&&!strcmp(getenv("DM_GAME_RES"),"1920x1080"),"2K selection persists without changing the running resolution");
     NSError *error=nil;CHECK(!dm_settings_env_write(root,@{@"DM_FPS":@"60"},&error)&&error,"unreadable configuration refuses replacement and reports the save error");
     for(NSInteger i=0;i<3;i++){settings.tabs.selectedSegment=i;[settings tabChanged:nil];for(NSInteger j=0;j<3;j++)CHECK(settings.pages[j].hidden==(i!=j),"tab switch shows exactly its own controls");}
     [settings.panel orderOut:nil];settings=nil;dm_settings_mac_start(nil);

@@ -1,9 +1,9 @@
 #include "../dm.h"
 #undef DM_GAME_MAC_RESOLUTION_PATCHES
 #define DM_GAME_MAC_RESOLUTION_PATCHES \
-    {"11111111111111111111111111111111", 8, 0xd2a89408, 0xd2a89408, 0xd2a89e08}, \
-    {"11111111111111111111111111111111", 20, 0x52805a04, 0x52805a04, 0x52808704}, \
-    {"22222222222222222222222222222222", 12, 0x52808704, 0x52805a04, 0x52808704}
+    {"11111111111111111111111111111111", 8, 0xd2a89408, 0xd2a89408, 0xd2a89e08, 0xd2a8a408}, \
+    {"11111111111111111111111111111111", 20, 0x52805a04, 0x52805a04, 0x52808704, 0x5280b404}, \
+    {"22222222222222222222222222222222", 12, 0x52808704, 0x52805a04, 0x52808704, 0}
 #include "../resolution_mac.c"
 static unsigned checks, failed;
 #define CHECK(condition) do { checks++; if (!(condition)) { failed++; fprintf(stderr,"FAIL line %d: %s\n",__LINE__,#condition); } } while (0)
@@ -23,6 +23,14 @@ int main(void) {
     reset("1920x1080");CHECK(dm_resolution_mac_patch(&module,image,sizeof image)==1);
     CHECK(word(8)==0xd2a89e08);CHECK(word(20)==0x52808704);CHECK(word(12)==0x52808704);
     for(size_t i=0;i<sizeof image;i++)if(!(i>=8&&i<12)&&!(i>=20&&i<24))CHECK(image[i]==original[i]);
+    reset("2560x1440");CHECK(dm_resolution_mac_patch(&module,image,sizeof image)==1);
+    CHECK(word(8)==0xd2a8a408 && word(20)==0x5280b404 && word(12)==0x52808704);
+    CHECK(dm_resolution_mac_has_qhd(module.build_id));
+    reset("2560x1440");strcpy(module.build_id,"22222222222222222222222222222222");
+    CHECK(!dm_resolution_mac_has_qhd(module.build_id));
+    CHECK(dm_resolution_mac_patch(&module,image,sizeof image)==-1 && !memcmp(image,original,sizeof image));
+    reset("2560x1440");image[20]^=1;memcpy(original,image,sizeof image);
+    CHECK(dm_resolution_mac_patch(&module,image,sizeof image)==-1 && !memcmp(image,original,sizeof image));
     reset("1280x720");strcpy(module.build_id,"22222222222222222222222222222222");
     CHECK(dm_resolution_mac_patch(&module,image,sizeof image)==1);CHECK(word(12)==0x52805a04);CHECK(word(8)==0xd2a89408);
     reset("1920x1080");strcpy(module.name,"sdk");CHECK(dm_resolution_mac_patch(&module,image,sizeof image)==0);CHECK(!memcmp(image,original,sizeof image));

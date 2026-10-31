@@ -32,7 +32,7 @@ class ResolutionProfileTests(unittest.TestCase):
             game.header(self.profile)
 
     def test_invalid_offsets_and_instruction_widths_are_rejected(self):
-        for field, value in [(1, '-4'), (1, '3'), (2, '0x100000000'), (3, '-1'), (4, '0x100000000')]:
+        for field, value in [(1, '-4'), (1, '3'), (2, '0x100000000'), (3, '-1'), (4, '0x100000000'), (5, '0x100000000')]:
             with self.subTest(field=field, value=value):
                 profile = copy.deepcopy(self.profile)
                 row = self.site.copy(); row[field] = value
@@ -41,8 +41,20 @@ class ResolutionProfileTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'invalid'):
                     game.header(profile)
 
+    def test_legacy_rows_keep_720p_and_1080p_without_inventing_1440p(self):
+        self.profile.rows = [(k, v[:5] if k == 'mac_resolution_patch' else v) for k, v in self.profile.rows]
+        self.assertIn('0xd2a89e08, 0x0}', game.header(self.profile))
+
+    def test_partial_1440p_preset_is_rejected(self):
+        for k, row in self.profile.rows:
+            if k == 'mac_resolution_patch':
+                row.pop()
+                break
+        with self.assertRaisesRegex(ValueError, 'incomplete 1440p'):
+            game.header(self.profile)
+
     def test_incomplete_row_is_rejected(self):
-        self.profile.rows.append(('mac_resolution_patch', self.site[:-1]))
+        self.profile.rows.append(('mac_resolution_patch', self.site[:4]))
         with self.assertRaisesRegex(ValueError, 'requires'):
             game.header(self.profile)
 

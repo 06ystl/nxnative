@@ -147,20 +147,25 @@ def header(g):
     if dmo not in ('gl', 'zero'): sys.exit(f'{g.id}: depth_mode must be gl or zero: {dmo}')
     api = g.get('device_api', '55.15')   # the NVN API major.minor version nvnDeviceGetInteger reports (hle_nvn.c)
     if not re.fullmatch(r'\d+\.\d+', api): sys.exit(f'{g.id}: device_api 要写成 主.次 | device_api must be major.minor: {api}')
-    resolution_rows = []
+    resolution_rows, resolution_qhd = [], {}
     known_builds = {b['main'] for b in g.builds().values() if 'main' in b}
     seen = set()
     for row in g.values('mac_resolution_patch'):
-        if len(row) != 5 or row[0] not in known_builds:
-            raise ValueError(f'{g.id}: mac_resolution_patch requires a known main build, offset, original, 720p and 1080p instruction words')
+        if len(row) not in (5, 6) or row[0] not in known_builds:
+            raise ValueError(f'{g.id}: mac_resolution_patch requires a known main build, offset, original, 720p, 1080p and optional 1440p instruction words')
         build, *numbers = row
-        offset, original, hd, full_hd = (int(v, 0) for v in numbers)
-        if offset < 0 or offset % 4 or any(w < 0 or w > 0xffffffff for w in (original, hd, full_hd)):
+        offset, original, hd, full_hd = (int(v, 0) for v in numbers[:4])
+        qhd = int(numbers[4], 0) if len(numbers) == 5 else 0
+        if offset < 0 or offset % 4 or any(w < 0 or w > 0xffffffff for w in (original, hd, full_hd, qhd)):
             raise ValueError(f'{g.id}: invalid mac_resolution_patch offset or instruction')
         if (build, offset) in seen:
             raise ValueError(f'{g.id}: duplicate mac_resolution_patch site for {build} at {offset:#x}')
         seen.add((build, offset))
-        resolution_rows.append('{' + q(build) + f', {offset:#x}, {original:#x}, {hd:#x}, {full_hd:#x}' + '}')
+        resolution_qhd.setdefault(build, []).append(bool(qhd))
+        resolution_rows.append('{' + q(build) + f', {offset:#x}, {original:#x}, {hd:#x}, {full_hd:#x}, {qhd:#x}' + '}')
+    for build, values in resolution_qhd.items():
+        if any(values) and not all(values):
+            raise ValueError(f'{g.id}: incomplete 1440p mac_resolution_patch preset for {build}')
     resolution_rows = ', '.join(resolution_rows) or '{0}'
     cheat_rows, cheat_sites = [], set()
     for row in g.values('mac_cheat_patch'):

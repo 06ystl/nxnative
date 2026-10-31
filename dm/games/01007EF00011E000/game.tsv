@@ -53,23 +53,41 @@ mac_cheat_patch	cd57b23fa4bbad65803d9788c01821ee	durability	0x15a1d04	0x00000000
 mac_cheat_patch	cd57b23fa4bbad65803d9788c01821ee	durability	0x15a1d08	0x00000000	0x17c82a08
 
 # Mac resolution presets in the renderer's size setup, verified by disassembly.
-# Fields: main build, offset, original instruction, 1280x720 word, 1920x1080 word.
+# Fields: main build, offset, original instruction, 720p, 1080p, 1440p words.
 # Update internal/output widths, output dimensions and crop together in both
 # operation modes. Keep the game's reference widths and timing logic unchanged.
-mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12660bc	0xd2a89e08	0xd2a89408	0xd2a89e08
-mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12660c8	0xf2e89908	0xf2e89408	0xf2e89e08
-mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12660d0	0xd280f008	0xd280a008	0xd280f008
-mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12660d4	0xf2c08708	0xf2c05a08	0xf2c08708
-mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12660f0	0x52808704	0x52805a04	0x52808704
-mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266104	0x5280f003	0x5280a003	0x5280f003
-mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266114	0xd2a89408	0xd2a89408	0xd2a89e08
-mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266118	0xf2e89408	0xf2e89408	0xf2e89e08
-mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266120	0xd280a008	0xd280a008	0xd280f008
-mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266124	0xf2c05a08	0xf2c05a08	0xf2c08708
-mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266134	0x52a88689	0x52a88689	0x52a890e9
-mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266140	0x52a89408	0x52a89408	0x52a89e08
-mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266180	0x5280a003	0x5280a003	0x5280f003
-mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266188	0x52805a04	0x52805a04	0x52808704
+# The startup heap grows by 112 MiB only at 1440p, covering the 93 MiB texture-pool
+# and 16 MiB GraphicsSystem increases without taking space from OpenWorldStage.
+# The 3232 MiB startup heap plus 52 MiB of modules fits the 3285 MiB application pool.
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x71c	0x52b86000	0x52b86000	0x52b86000	0x52b94000
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0xc617c0	0x52b82008	0x52b82008	0x52b82008	0x52b90008
+# GraphicsSystem's 48 MiB heap also holds both window buffers (30 MiB at 1440p).
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0xc61b14	0x52a06000	0x52a06000	0x52a06000	0x52a08000
+# 1440p scales the fixed render-texture pool from 115 MiB to 208 MiB (115 * 16/9, rounded up to 4 MiB).
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1261704	0x52a0e60a	0x52a0e60a	0x52a0e60a	0x52a1a00a
+# The window buffers must cover the new crop; 720p/1080p retain the original buffers.
+# The singleton size getter also has two inlined initializers in nnMain; the first
+# call sets its guard, so all three copies must agree.
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0xc61ee8	0xd280f009	0xd280f009	0xd280f009	0xd2814009
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0xc61ef4	0xf2c08709	0xf2c08709	0xf2c08709	0xf2c0b409
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0xc61f1c	0xd280f009	0xd280f009	0xd280f009	0xd2814009
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0xc61f28	0xf2c08709	0xf2c08709	0xf2c08709	0xf2c0b409
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12618b8	0xd280f009	0xd280f009	0xd280f009	0xd2814009
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12618c4	0xf2c08709	0xf2c08709	0xf2c08709	0xf2c0b409
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12660bc	0xd2a89e08	0xd2a89408	0xd2a89e08	0xd2a8a408
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12660c8	0xf2e89908	0xf2e89408	0xf2e89e08	0xf2e8a408
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12660d0	0xd280f008	0xd280a008	0xd280f008	0xd2814008
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12660d4	0xf2c08708	0xf2c05a08	0xf2c08708	0xf2c0b408
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x12660f0	0x52808704	0x52805a04	0x52808704	0x5280b404
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266104	0x5280f003	0x5280a003	0x5280f003	0x52814003
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266114	0xd2a89408	0xd2a89408	0xd2a89e08	0xd2a8a408
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266118	0xf2e89408	0xf2e89408	0xf2e89e08	0xf2e8a408
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266120	0xd280a008	0xd280a008	0xd280f008	0xd2814008
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266124	0xf2c05a08	0xf2c05a08	0xf2c08708	0xf2c0b408
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266134	0x52a88689	0x52a88689	0x52a890e9	0x52a89689
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266140	0x52a89408	0x52a89408	0x52a89e08	0x52a8a408
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266180	0x5280a003	0x5280a003	0x5280f003	0x52814003
+mac_resolution_patch	cd57b23fa4bbad65803d9788c01821ee	0x1266188	0x52805a04	0x52805a04	0x52808704	0x5280b404
 
 # ---- Files ----
 modules	main subsdk0 sdk

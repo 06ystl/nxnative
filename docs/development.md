@@ -588,7 +588,7 @@ The script reuses the IPA script's extraction, build-ID verification, rewriting 
 
 `dmhost_app` defaults to an optimized Release host: `-O2 -g`, arm64, tuned for Apple M1. Debug symbols remain available for crash analysis. Both Mac entry scripts use this target. For a compiler comparison, override `MACOS_APP_CFLAGS` through the environment or the Make command line; the diagnostic `dmhost` target retains its original `-O1` flags. A compiler optimization change alone does not establish a frame-rate improvement; compare the same game scene, resolution and settings.
 
-For BotW 1.9.0 on Mac, `DM_GAME_RES=1920x1080` selects true 1080p scene rendering, HUD and output; `DM_GAME_RES=1280x720` selects 720p. Restart after changing it. With the variable unset, the game retains its original mode-dependent sizes: handheld 1280x720; docked 1600x900 scene rendering into a 1920x1080 output. The Mac loader applies only the profile's verified build-specific instruction presets before sealing executable pages. It checks all original instructions before changing any and rejects unsupported sizes or builds. Existing D2R `KRES0`/`KRES1` handling remains unchanged. The preset does not apply to iOS.
+For BotW 1.9.0 on Mac, `DM_GAME_RES=2560x1440` selects true 1440p scene rendering, HUD and output; `1920x1080` selects 1080p and `1280x720` selects 720p. Restart after changing it. With the variable unset, the game retains its original mode-dependent sizes: handheld 1280x720; docked 1600x900 scene rendering into a 1920x1080 output. The Mac loader applies only the profile's verified build-specific instruction presets before sealing executable pages. It checks all original instructions before changing any and rejects unsupported sizes or builds. Existing D2R `KRES0`/`KRES1` handling remains unchanged. The preset does not apply to iOS.
 
 The packaging and launch setup follow [d2r-mobile's mac_app.sh](https://github.com/jhaizhou-ops/d2r-mobile/blob/46cb318b17e4b75c2e7a45d4256fa79edbfaef1e/dm/tools/mac_app.sh) and [app_mac.m](https://github.com/jhaizhou-ops/d2r-mobile/blob/46cb318b17e4b75c2e7a45d4256fa79edbfaef1e/dm/host/app_mac.m). This script bundles the game resources and code, so the finished app can move independently of the extraction folder. It copies resources using APFS clones where available, validates the plist and verifies its ad-hoc signature before replacing an earlier app with the same bundle ID. Extraction is deleted only after success, unless `--keep-extracted` is given.
 
@@ -677,7 +677,7 @@ or shell quotes. The settings below remain supported:
 | `DM_KEYS` | Scripted input for repeatable tests, including both sticks. A non-empty value takes ownership of the controller channel; leave unset when playing with a physical controller |
 | `DM_NVN_TSV`, `DM_NVN_SHOT`, `DM_PROBE` | Frame measurements, engine screenshots and instruction probes. These are diagnostic tools; probes can slow the game. See [debugging](agents/05-debugging.md) and [graphics](agents/04-graphics.md) |
 | `DM_WINDOW`, `DM_AUDIO` | Native window and audio output; the packaged Mac app supplies both automatically. `dmhost` diagnostics opt in with `1`; `DM_AUDIO=0` selects the silent sink |
-| `DM_GAME_RES` | BotW 1.9.0 Mac: `1280x720` or `1920x1080`, including the scene, HUD and output. Unset retains native mode-dependent sizes. The local 1080p app bundles `1920x1080`; a user setting overrides it. D2R retains its existing KRES size parameters |
+| `DM_GAME_RES` | BotW 1.9.0 Mac: `1280x720`, `1920x1080` or `2560x1440`, including the scene, HUD and output. Unset retains native mode-dependent sizes. The local 1080p app bundles `1920x1080`; a user setting overrides it. D2R retains its existing KRES size parameters |
 | `DM_RUMBLE_GAIN` | Mac controller output multiplier, any finite nonnegative value, default `1`. `3` strengthens weak effects; `20` brings weaker waveform segments up to full API intensity; `0` mutes. Output remains in the system's 0–1 range. Applies after the Xbox response; restart after changing |
 | `DM_AUDIO_HAPTICS` | Mac: `1` enables game-processed selected action/impact/footstep audio on one USB DualSense for a verified game build. Default off. Replaces that controller’s ordinary grip rumble; adaptive triggers remain enabled. Unavailable USB falls back to game rumble. Restart after changing |
 | `DM_AUDIO_HAPTICS_GAIN` | Audio-haptics gain, default `0.3`, any finite nonnegative multiplier; independent of `DM_RUMBLE_GAIN`. The local package uses `20`. Stereo-linked peak control uses 2 ms lookahead and 50 ms recovery when amplified PCM exceeds ±1; full-scale output remains available. Restart after changing |
@@ -737,18 +737,31 @@ stay outside this repository.
 
 ### BotW Mac resolution presets
 
-Put `DM_GAME_RES=1920x1080` in the Mac app's user `env.txt` for 1080p,
-or `DM_GAME_RES=1280x720` for 720p, then restart. Keep `DM_OPMODE` at your
+Choose 2560 × 1440 (2K) in **Settings… → Display**, then restart. The same
+preset is `DM_GAME_RES=2560x1440` in the user `env.txt`; `1920x1080` and
+`1280x720` retain their previous meaning. The shipped default remains 1080p. Keep `DM_OPMODE` at your
 preferred game mode; changing only the resolution retains that mode's effects
 and game behavior. Higher resolution increases GPU work, so compare the same
 save and view when choosing a preset.
 
 The profile's `mac_resolution_patch` rows cover BotW 1.9.0 main build
 `cd57b23fa4bbad65803d9788c01821ee`. They update internal/output widths, output
-height and viewport/crop together in the renderer's size setup. The game's
+height and viewport/crop together in the renderer's size setup, and provide the
+1440p memory budgets described in the [game note](../dm/games/01007EF00011E000/README.md#rendering). The game's
 reference widths, dynamic-resolution calculations and timing logic are retained.
 The loader changes its private module image; packaged game modules remain
 unchanged. No shader-chain change is required.
+
+A `mac_resolution_patch` row contains the main build ID, aligned offset,
+original instruction, 720p instruction, 1080p instruction and optional 1440p
+instruction. Five-field legacy rows remain valid for 720p/1080p. A build
+with any 1440p word must supply it for every site; partial presets are rejected
+before any code is changed. The settings panel offers 2K only for a build with
+a complete preset. These are game instructions, not shader inputs.
+
+1440p has 3,686,400 pixels versus 2,073,600 at 1080p (16/9 times as many).
+It can improve edge sampling and fine distant detail, but does not replace
+textures, models or lighting. GPU time need not scale linearly with pixel count.
 
 The custom Mac presets use `DM_GAME_RES` for complete output dimensions. Leave
 the shared upstream render-scale setting at its default when comparing these presets.

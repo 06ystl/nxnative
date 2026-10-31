@@ -72,6 +72,7 @@ Used at `DM_FPS_TARGET=0` and for the interval the framework keeps while the VFR
 
 ## Rendering
 
+- **Native Mac resolution presets (current, 1.9.0).** `DM_GAME_RES=1280x720`, `1920x1080` or `2560x1440` selects scene, HUD and output dimensions together; it is also available in the native settings panel and takes effect after restart. Unset retains the game's original mode-dependent sizes. The loader checks all original instructions against main build `cd57b23fa4bbad65803d9788c01821ee` before applying the profile's `mac_resolution_patch` rows. See [1440p memory budgets and validation](#native-mac-1440p-validation).
 - **Resolved: the 3D scene black, only particles and the HUD drawn.** The engine binds almost every texture with `nvnCommandBufferBindTexturesDeferred` (`main+0xec2e64`, one handle, the pointer being the handle field inside the texture-sampler object): the GPU reads the handle when the command executes, and the game records its command blocks once and writes the handles afterwards. The host copied them at recording, mostly zeros, so the deferred-lighting composite read the dummy texture 0. The bind record keeps the source address and replay refreshes the handles first (`bh_fresh`). Found with a data-flow table from `DM_NVN_PASSDUMP_ALL`: the composite's `B` lines were all `tid=0 dummy` (without `_ALL` only the first draw of each pass is listed).
 - **Resolved: the same texture attached at two colour slots.** The G-buffer passes attach the albedo and another buffer twice each (c1 = c2, c3 = c4) with write mask 0 on the duplicates. On Apple's TBDR the later copy (loaded, never written) overwrote the other's writes, per 32×32 tile: the albedo held only scattered squares. A repeated slot is left unattached (`rt_dup_slot`).
 - **Cube textures sampled as cube arrays**: 1,512 shaders sample the environment probes as `texturecube_array` with a single cube bound; NVN cube textures are now 6-layer 2D arrays bound through views (`tex_fit`).
@@ -81,6 +82,53 @@ Used at `DM_FPS_TARGET=0` and for the interval the framework keeps while the VFR
 - The game keeps NVN's GL depth mode. It has an `RG8_UI2F` vertex attribute (converted on the CPU, `vconv_i2f`). 101 compute and 4 vertex shaders read the driver segment `c0`; they render the same since compute `c0` carries the dispatch size.
 - It finalizes its transient render targets before every submit and builds them again the next frame, which the storage-takeover rule guards with a 16-submission window (`alias_take_over`).
 - Windowed on the Mac with `present_now`'s residency commit: its title, 60 fps, no GPU error.
+
+### Native Mac 1440p validation
+
+Higher resolution needs larger game-side heaps, even though Metal allocates its
+own render textures. At 1440p the fixed 115 MiB texture pool exhausted its free
+blocks while loading the world (`main+0xed7128`). Scaling by the 16/9 pixel ratio
+and rounding up to 4 MiB gives 208 MiB. `GraphicsSystem` also failed to allocate
+the window buffers' 30 MiB storage (`MemoryPoolInitialize`, flags `0x24`).
+The verified preset changes these budgets only at 1440p:
+
+| Budget and instruction | Original, MiB | 1440p, MiB |
+|---|---:|---:|
+| Render-texture pool, `main+0x1261704` | 115 | 208 |
+| `GraphicsSystem`, `main+0xc61b14` | 48 | 64 |
+| Startup heap, `main+0x71c` | 3120 | 3232 |
+| Root heap, `main+0xc617c0` | 3088 | 3200 |
+
+The additional 112 MiB covers both child heaps' 109 MiB increase. Without it,
+`OpenWorldStage` was left with 278 MiB free, too little for the placement
+manager's 328 MiB heap (`main+0x153da8c`). The startup heap plus the rewritten
+modules (52 MiB, rounded as `SetHeapSize` counts them) fits the existing 3285 MiB
+application pool and 4 GiB address-space layout. The 720p/1080p budgets, effects,
+game mode and timing remain unchanged.
+
+The output-size singleton is initialized by two inline copies in `nnMain`
+(`main+0xc61ee8` / `+0xc61f1c`) as well as its out-of-line getter
+(`main+0x12618b8`). All three must agree before the guard is set; changing only
+the getter leaves 1080p window buffers and crops the 1440p scene and HUD.
+The preset covers these copies as well as scene dimensions and memory budgets.
+
+Apple M1 Pro, 2026-10-31: independent copies of the same Zora bridge save,
+docked mode, fixed camera, 60 fps target, audio disabled, no window. Both runs
+loaded the world and opened the inventory; screenshots were inspected at their
+actual 1920x1080 and 2560x1440 sizes, with the full HUD and matching framing.
+Texture descriptors confirmed 2560x1440 scene/depth targets and 1280x720
+half-resolution effects at 1440p. The 10-second measurement at 45–55 seconds
+excludes screenshots and texture-list logging:
+
+| Metric | 1080p | 1440p |
+|---|---:|---:|
+| Generated frames / second | 60.0 | 52.7 |
+| Frame p50 / p99 / max, ms | 16.73 / 17.99 / 18.11 | 18.83 / 21.76 / 32.08 |
+| GPU mean / p95, ms | 13.19 / 16.65 | 16.78 / 19.01 |
+
+These are offscreen costs, not measured display intervals. 1440p stays optional;
+1080p remains the packaged default. The tests cover this save and the inventory,
+not every location or a sustained foreground session.
 
 ### Upscaling (current)
 

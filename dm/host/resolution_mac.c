@@ -3,7 +3,7 @@
 typedef struct {
     const char *build;
     size_t offset;
-    uint32_t original, hd, full_hd;
+    uint32_t original, hd, full_hd, qhd;
 } resolution_patch;
 static const resolution_patch patches[] = {DM_GAME_MAC_RESOLUTION_PATCHES};
 
@@ -12,9 +12,9 @@ int dm_resolution_mac_patch(const module_t *module, uint8_t *image, size_t lengt
     // Other games keep their existing KRES parameter handling, including its
     // accepted values. Only profiles with verified loader sites use this path.
     if (!patches[0].build || !request || !*request || strcmp(module->name, "main")) return 0;
-    int full_hd = !strcmp(request, "1920x1080");
-    if (!full_hd && strcmp(request, "1280x720")) {
-        LOG("【红】DM_GAME_RES for this Mac profile requires 1280x720 or 1920x1080");
+    int full_hd = !strcmp(request, "1920x1080"), qhd = !strcmp(request, "2560x1440");
+    if (!full_hd && !qhd && strcmp(request, "1280x720")) {
+        LOG("【红】DM_GAME_RES for this Mac profile requires 1280x720, 1920x1080 or a verified 2560x1440 preset");
         return -1;
     }
     unsigned count = 0;
@@ -23,6 +23,10 @@ int dm_resolution_mac_patch(const module_t *module, uint8_t *image, size_t lengt
     for (size_t i = 0; i < sizeof patches / sizeof patches[0]; i++) {
         const resolution_patch *p = &patches[i];
         if (strcmp(module->build_id, p->build)) continue;
+        if (qhd && !p->qhd) {
+            LOG("【红】DM_GAME_RES has no complete 1440p preset for main build %s",module->build_id);
+            return -1;
+        }
         if (p->offset > length || length - p->offset < sizeof(uint32_t)) {
             LOG("【红】DM_GAME_RES patch lies outside the module image");
             return -1;
@@ -41,7 +45,7 @@ int dm_resolution_mac_patch(const module_t *module, uint8_t *image, size_t lengt
     for (size_t i = 0; i < sizeof patches / sizeof patches[0]; i++) {
         const resolution_patch *p = &patches[i];
         if (strcmp(module->build_id, p->build)) continue;
-        uint32_t word = full_hd ? p->full_hd : p->hd;
+        uint32_t word = qhd ? p->qhd : full_hd ? p->full_hd : p->hd;
         memcpy(image + p->offset, &word, sizeof word);
     }
     LOG("Mac render resolution: %s (%u verified sites, main build %s)", request, count, module->build_id);
@@ -52,4 +56,14 @@ int dm_resolution_mac_has_presets(const char *build) {
     for(size_t i=0;i<sizeof patches/sizeof *patches;i++)
         if(patches[i].build && !strcmp(patches[i].build,build))return 1;
     return 0;
+}
+
+int dm_resolution_mac_has_qhd(const char *build) {
+    unsigned count=0;
+    for(size_t i=0;i<sizeof patches/sizeof *patches;i++) {
+        if(!patches[i].build || strcmp(patches[i].build,build))continue;
+        if(!patches[i].qhd)return 0;
+        count++;
+    }
+    return count!=0;
 }

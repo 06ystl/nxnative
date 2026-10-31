@@ -97,7 +97,7 @@ Saves are in `~/Library/Application Support/org.nxnative.<title-id>/save`, logs 
 
 Rebuilt Mac apps use the shared renderer’s state and buffer caches and immutable uniform snapshots automatically. These optimizations preserve the game's resolution, effects and timing. Use `DM_LANG=zh-Hans` for Simplified Chinese and `DM_OPMODE=0` for handheld mode if desired; restart after changing settings. See the [environment-variable guide](docs/development.md#mac-environment-variables) for the remaining options.
 
-Breath of the Wild 1.9.0 Mac builds support `DM_GAME_RES=1920x1080` for true 1080p scene rendering, HUD and output, or `DM_GAME_RES=1280x720` for 720p. Put the setting in your `env.txt` and restart. Higher resolution uses more GPU time; select the preset that gives you the clarity and frame rate you prefer.
+Breath of the Wild 1.9.0 Mac builds support `DM_GAME_RES=2560x1440` for 1440p (2K), `1920x1080` for 1080p, or `1280x720` for 720p, covering scene rendering, HUD and output. Select the resolution in **Settings… → Display**, or edit `env.txt`, then restart. 1440p renders 78% more pixels than 1080p, improving edge and distant-detail clarity while using more GPU time. Texture and model assets stay the same; the packaged default remains 1080p.
 
 On Mac, Breath of the Wild 1.9.0 also accepts experimental `DM_FPS=90` or `DM_FPS=120` in `env.txt`, followed by a restart. These opt-in modes adapt the game time step to elapsed time and preserve explicit game timing overrides. The default remains 60; the selected value is a ceiling, and actual frame rate depends on the scene, GPU and display. Resolution and effects stay unchanged.
 
@@ -419,7 +419,7 @@ Mac 手机体感：在用户 `env.txt` 中设置 `DM_MOTION_SOURCE=phone` 后重
 
 重新构建的 Mac App 会自动使用共享渲染器的状态和缓冲区缓存，以及不可变的 uniform 快照。这些优化保留游戏原有的分辨率、特效和运行时序。需要时可设置 `DM_LANG=zh-Hans` 使用简体中文、`DM_OPMODE=0` 使用掌机模式，修改后重启游戏。其他选项见[环境变量说明](docs/development.md#mac-environment-variables)。
 
-旷野之息 1.9.0 的 Mac 构建支持 `DM_GAME_RES=1920x1080`，将场景、HUD 和输出一起提高到真正的 1080p；`DM_GAME_RES=1280x720` 则使用 720p。在用户 `env.txt` 中设置后重启生效。更高分辨率会增加 GPU 耗时，可按清晰度和帧率选择。
+旷野之息 1.9.0 的 Mac 构建支持 `DM_GAME_RES=2560x1440`（1440p／2K）、`1920x1080`（1080p）和 `1280x720`（720p），同时设置场景、HUD 与输出尺寸。在**设置… → 画面**中选择，或修改 `env.txt`，重启后生效。1440p 比 1080p 多渲染约 78% 的像素，边缘和远处细节更清晰，也会增加 GPU 耗时。纹理和模型资源保持原样，打包默认仍为 1080p。
 
 旷野之息 1.9.0 的 Mac 构建还可在 `env.txt` 中设置 `DM_FPS=90` 或 `DM_FPS=120`，重启后生效。这两个实验性模式按实际经过的时间调整游戏步长，同时保留游戏主动指定的时序。默认仍为 60；设置值是帧率上限，实际帧率取决于场景、GPU 和显示器，分辨率与特效保持不变。
 
