@@ -7,7 +7,7 @@ enum { EVENTS=64, SOURCES=128, WAVE_LIMIT=1024*1024 };
 static const dm_audio_source_layout layouts[]={DM_GAME_MAC_AUDIO_EVENTS};
 static const dm_audio_source_layout *layout;
 static uint64_t base,rendered_player;
-static int configured;
+static int configured,rendered_playing;
 static _Atomic int active;
 static _Atomic unsigned epoch=1;
 static unsigned rendered_epoch,next_event,next_source;
@@ -15,7 +15,7 @@ static pthread_mutex_t event_lock=PTHREAD_MUTEX_INITIALIZER;
 typedef struct {uint64_t event,player;uint32_t generation,epoch;} sound_event;
 static sound_event events[EVENTS];
 typedef struct {uint64_t event,sound;uint32_t event_gen,sound_gen;} sound_key;
-typedef struct {sound_key key;uint64_t data[DM_WAVE_CHANNELS];unsigned channels;} audio_source;
+typedef struct {sound_key key;uint64_t data[DM_WAVE_CHANNELS];unsigned channels,loop;} audio_source;
 static audio_source sources[SOURCES];
 void (*dm_audio_sources_submit)(const float*,unsigned);
 
@@ -26,13 +26,16 @@ static int guest_read(void *ctx,uint64_t at,void *out,size_t n){
 static dm_audio_source_read_fn read_memory=guest_read;
 static void *read_context;
 #define RD(at,v) read_memory(read_context,(at),&(v),sizeof(v))
-static uint64_t current_player(void){
+static uint64_t resident_player(int *playing){
     uint32_t mode;uint64_t info,p;uint8_t life;
-    if(!layout||!RD(base+layout->mode_global,mode)||mode!=layout->playing||
+    *playing=0;
+    if(!layout||!RD(base+layout->mode_global,mode)||
        !RD(base+layout->info_global,info)||!info||!RD(info+layout->player_field,p)||!p||
        !RD(p+layout->life_field,life)||life!=layout->live)return 0;
+    *playing=mode==layout->playing;
     return p;
 }
+static uint64_t current_player(void){int playing;uint64_t p=resident_player(&playing);return playing?p:0;}
 static void clear_sources(void){memset(sources,0,sizeof sources);next_source=0;}
 void dm_audio_sources_set_active(int on){
     int value=!!on&&configured;
@@ -82,7 +85,17 @@ static int register_wave(sound_key key,uint64_t wave){
     dm_wave_source info;
     int ok=read_memory(read_context,wave,copy,bytes)&&dm_fwav_source(copy,bytes,&info)&&live_key(key);
     free(copy);if(!ok)return 0;
-    audio_source *s=&sources[next_source++%SOURCES];*s=(audio_source){.key=key,.channels=info.channels};
+    // Retire ended voices first. A long-running glide/water texture must not be
+    // overwritten merely because many short footsteps arrived after it.
+    audio_source *s=NULL;
+    for(unsigned i=0;i<SOURCES;i++){
+        unsigned at=(next_source+i)%SOURCES;
+        if(!sources[at].channels||!live_key(sources[at].key)){
+            s=&sources[at];next_source=(at+1)%SOURCES;break;
+        }
+    }
+    if(!s)return 0; // Keep the event pending until an active slot retires.
+    *s=(audio_source){.key=key,.channels=info.channels,.loop=info.loop};
     for(unsigned i=0;i<info.channels;i++)s->data[i]=wave+info.data_offset[i];
     return 1;
 }
@@ -110,15 +123,20 @@ static int collect_event(sound_event e,uint64_t player,unsigned current_epoch){
     return pending;
 }
 unsigned dm_audio_sources_begin(void){
+    rendered_playing=0;
     if(!configured||!dm_audio_sources_submit)return 0;
     unsigned e=atomic_load(&epoch);
     if(rendered_epoch!=e){clear_sources();rendered_epoch=e;}
     if(!atomic_load(&active))return 0;
-    uint64_t player=current_player();
+    int playing;uint64_t player=resident_player(&playing);
     if(player!=rendered_player){clear_sources();rendered_player=player;}
-    if(!player){
-        clear_sources();pthread_mutex_lock(&event_lock);memset(events,0,sizeof events);pthread_mutex_unlock(&event_lock);return 0;
+    if(!playing){
+        // The SDK can retain a paused loop without creating a new sound event.
+        // Preserve only its live identity; never replay old one-shots on resume.
+        for(unsigned i=0;i<SOURCES;i++)if(sources[i].channels&&(!sources[i].loop||!live_key(sources[i].key)))sources[i].channels=0;
+        pthread_mutex_lock(&event_lock);memset(events,0,sizeof events);pthread_mutex_unlock(&event_lock);return 0;
     }
+    rendered_playing=1;
     sound_event copy[EVENTS];pthread_mutex_lock(&event_lock);memcpy(copy,events,sizeof copy);pthread_mutex_unlock(&event_lock);
     for(unsigned i=0;i<EVENTS;i++)if(copy[i].event&&!collect_event(copy[i],player,e)){
         pthread_mutex_lock(&event_lock);
@@ -128,7 +146,7 @@ unsigned dm_audio_sources_begin(void){
     return e;
 }
 int dm_audio_sources_source(uint64_t data){
-    if(!data||!atomic_load(&active)||atomic_load(&epoch)!=rendered_epoch||!rendered_player)return 0;
+    if(!data||!atomic_load(&active)||atomic_load(&epoch)!=rendered_epoch||!rendered_player||!rendered_playing)return 0;
     for(unsigned i=0;i<SOURCES;i++)for(unsigned k=0;k<sources[i].channels;k++)if(sources[i].data[k]==data){
         if(live_key(sources[i].key))return 1;
         sources[i].channels=0;break;
@@ -137,7 +155,9 @@ int dm_audio_sources_source(uint64_t data){
 }
 void dm_audio_sources_finish(unsigned e,const float *stereo,unsigned frames){
     if(!e||!dm_audio_sources_submit||!atomic_load(&active)||atomic_load(&epoch)!=e)return;
-    if(current_player()!=rendered_player){clear_sources();return;}
+    int playing;uint64_t player=resident_player(&playing);
+    if(player!=rendered_player){clear_sources();return;}
+    if(!playing)return;
     dm_audio_sources_submit(stereo,frames);
 }
 int dm_audio_sources_prepare(const module_t *modules,int count){

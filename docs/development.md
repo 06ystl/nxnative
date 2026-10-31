@@ -555,7 +555,9 @@ in v4.12.2; the short durability-impact feel remains unverified.
 `audio_sources_mac.c` observes the common sound-event creation gate
 `OBS_AUDIO_EVENT`. The verified profile selects `mac_audio_events` patterns:
 player/NPC footsteps, jump/landing, weapon swing/charge, shield equip, bow draw/release,
-explosion, player damage, body landing/rolling and water movement effects.
+explosion, player damage, body landing/rolling, glider cloth/wind, swimming strokes,
+climbing, ladder steps and sliding effects. The glider selection excludes its
+silent ducking/control event rather than selecting every `Parashawl` name.
 It retains original sound variants rather than synthesizing material presets.
 Actor identity does not filter or attenuate NPCs. Gameplay state and object
 generations reject retired events and sources;
@@ -607,7 +609,12 @@ invalidated before the next effect. Trigger updates never change audio volumes,
 LEDs or ordinary rumble amplitudes.
 
 USB loss restores ordinary rumble. Ineligibility invalidates pending events and
-queued audio; menus and player teardown discard source identities. Closing the
+queued audio. Menus suppress capture and discard one-shots and pending events,
+but retain still-live FWAV loop identities for the same resident player: the SDK
+resumes glider loops without creating new events. Player teardown, generation
+changes and output ineligibility invalidate those identities. The bounded source
+table retires ended voices before registering new ones; short effects cannot
+evict a live continuous source. Closing the
 stream logs accepted input frames/peak and actual callback signal frames/peak,
 layout errors and queue drops. The callback only updates counters; it never logs.
 The Mac's default speaker mute is separate from this USB stream. A zero volume
@@ -629,6 +636,15 @@ swings, `Bow_Draw`/`Bow_Release`, `SE_BM_EXPLODE`, `SE_Cmn_Damage3`, body landin
 and water effects. Voice/UI event names were excluded by the same selector.
 The user reported that the integrated haptics were working well on 2026-10-31.
 The v4.12.2 app remains an earlier accepted USB audio/trigger baseline.
+
+The locomotion extension was captured without physical output using independent
+saves. Open-glider screenshots and original BARS wave comparisons identified
+cloth loops, updraft wind, equip/squeak/unequip transients; swimming captured
+idle strokes, forward strokes and dash splashes. An in-flight menu reproduced
+lost glider capture on resume, which loop-identity retention fixes. Climbing,
+ladder and waterfall event selection is covered by the game sound database and
+synthetic source tests; those scenes still need in-game/manual confirmation.
+Gain, spatial balance and peak processing are unchanged from the accepted version.
 
 ### Mac controller motion
 

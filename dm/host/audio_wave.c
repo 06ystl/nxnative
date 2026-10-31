@@ -11,7 +11,7 @@ int dm_fwav_source(const uint8_t *b,size_t size,dm_wave_source *out){
     unsigned fmt=b[inf+8];uint32_t n=u32(b+inf+0x14),hz=u32(b+inf+0xc),channels=u32(b+inf+0x1c);
     if(!n||n>480000||hz<8000||hz>96000||!channels||channels>DM_WAVE_CHANNELS||fmt>2||!span(inf+0x20,8*channels,size))return 0;
     uint32_t bytes=fmt==2?(n+13)/14*8:fmt==1?n*2:n;
-    dm_wave_source result={.channels=channels,.frames=n,.rate=hz,.data_bytes=bytes};
+    dm_wave_source result={.channels=channels,.frames=n,.rate=hz,.data_bytes=bytes,.loop=!!b[inf+9]};
     for(unsigned i=0;i<channels;i++){
         size_t ci=inf+0x1c+(uint64_t)u32(b+inf+0x24+8*i);
         if(!span(ci,16,size))return 0;
