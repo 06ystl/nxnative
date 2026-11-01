@@ -204,12 +204,14 @@ an Xcode GPU capture of these passes to distinguish shader stalls from
 attachment traffic before changing them. Profiled runs are excluded from the
 throughput comparison above.
 
-The reviewable App is
-`01007EF00011E000-work/perf-v4.21/Zelda v4.21 1440p Test.app`, using
-`perf-v4.21/app-state/save`, an independent copy of the benchmark seed, and
-its own bundle ID. It keeps the controller-UI patch beside the test App;
-normal startup controller selection still applies. Its bundled defaults are
-native 1440p and 60 fps. It has not replaced the formal App.
+The daily-use release is `塞尔达/ZeldaBreathOfTheWild-v4.21.app`. It uses the
+validated executable with the original bundle ID,
+`org.nxnative.01007ef00011e000`, so existing Application Support saves,
+configuration and caches remain in use. Bundled defaults are native 1440p
+and a 60 fps target; the user's `env.txt` takes precedence. The optional
+`塞尔达/patches/dualsense-ui` remains selected at startup by controller type.
+The benchmark App used its own bundle ID and independent save under
+`perf-v4.21/app-state`; those test paths are absent from the release.
 
 **Foreground validation (current, fixed camera).** The Mac was unlocked and
 the packaged Apps ran visibly from independent save copies. Internal scene
@@ -264,10 +266,13 @@ The built-in `fullscreen-refresh-fix` run is separate from the external
 screen comparisons. Configurations, summaries, logs and screenshots remain
 under the named run directories in `perf-v4.21`.
 
-The latest test App above contains the physical-refresh fix and retains its
-independent save. The formal v4.20 App has not been replaced. Stable 60 fps
-at native 1440p remains open: the final external render p95 is 19.42 ms,
-above the 16.67 ms budget. Other scenes, games and iOS were not tested.
+The formal v4.21 release includes the physical-refresh fix and replaces v4.20
+in the daily-use folder. The previous package is retained outside that folder
+under `01007EF00011E000-work/release-v4.21/rollback/`. Packaging preserves the
+game resources and original save/configuration identity and verifies the
+arm64 executable and ad-hoc signature. Stable 60 fps at native 1440p remains
+open: the final external run measured 57.6 fps and render p95 19.42 ms, above
+the 16.67 ms budget. Other scenes, games and iOS were not tested.
 
 ## Rendering
 
