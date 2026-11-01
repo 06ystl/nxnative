@@ -199,13 +199,18 @@ def header(g):
     frame_guards = ', '.join(frame_guards) or '{0}'
     bow_rows, bow_builds = [], set()
     for row in g.values('mac_bow_state'):
-        if len(row) not in (17,18) or row[0] not in known_builds:
-            raise ValueError(f'{g.id}: mac_bow_state requires a known main build, 16 layout fields and optional shot-bow register')
+        if len(row) not in (17,18,26) or row[0] not in known_builds:
+            raise ValueError(f'{g.id}: mac_bow_state requires a known main build, 16 layout fields, optional shot-bow register and optional 8-field ammunition layout')
         values = [int(value, 0) for value in row[1:]]
         if len(values)==16: values.append(31)
         if any(value < 0 or value > 0xffffffff for value in values) or values[7] > 255:
             raise ValueError(f'{g.id}: invalid mac_bow_state fields')
         if values[16]>31: raise ValueError(f'{g.id}: invalid bow shot-bow register')
+        if len(values)>17:
+            if not values[17] or not values[24]:
+                raise ValueError(f'{g.id}: invalid bow ammunition layout')
+            if any(values[i]%4 for i in range(17,22)):
+                raise ValueError(f'{g.id}: unaligned bow ammunition field')
         if any(values[i] % 4 for i in (0, 1, 2, 3, 4, 5, 10, 11, 12, 13)):
             raise ValueError(f'{g.id}: unaligned mac_bow_state field')
         if len({values[8], values[14], values[15]}) != 3:

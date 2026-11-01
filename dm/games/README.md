@@ -258,9 +258,20 @@ main-relative; other fields are object-relative. The actor lifecycle field appli
 to both player and bow. Ready, reload and drawing values must be distinct.
 An invalid link generation is `0xffffffff`. An optional final register number
 identifies the bow actor at `OBS_BOW_SHOT`; omitted or `31` disables shot
-notifications while preserving the legacy progressive-resistance behavior.
+notifications while preserving position-based resistance.
 The shot gate must be verified against actual release, cancellation and empty
 arrows; animation requests and inventory count changes alone are insufficient.
+
+After the shot register, an optional group of eight fields gates resistance on
+selected ammunition: inventory global, category-head field (pointer to an item
+pointer), list field, item-type field, item-count field, item-flags field,
+ammunition type value, and category capacity. The flags are consecutive equipped
+and in-inventory bytes. The list has previous/next pointers followed by a 32-bit
+count and signed node offset; each item's next pointer is at node offset + 8.
+The reader follows only that category, requires a positive count on its equipped
+ammunition, and rechecks inventory identity, list links and the selected entry.
+An omitted group retains older layouts' behavior. These addresses, like the bow
+layout, are excluded when deriving a profile for a different main build.
 
 Only add a layout after checking its binary references and observing pause,
 damage, equipment loss and scene teardown on that exact build. The host rejects

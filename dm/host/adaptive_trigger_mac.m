@@ -13,7 +13,6 @@ static uint64_t g_shield_time, g_impact_until;
 static int g_left_sent = -1;
 static int g_active, g_closed, g_sent = -1, g_rearm = 1;
 static uint64_t g_sampled;
-static float g_charge;
 static dm_bow_snapshot g_previous;
 static uint64_t g_shot_seen, g_pull_player, g_pull_time, g_recoil_player, g_recoil_until;
 static int g_cancelled;
@@ -44,7 +43,7 @@ void dm_adaptive_trigger_set_usb_output(dm_trigger_output_fn output) {
 
 static void trigger_off(void) {
     if (g_sent >= 0) write_slope(1,(dm_trigger_slope){0});
-    g_sent = -1; g_charge = 0;
+    g_sent = -1;
 }
 static void shield_off(void) {
     if (g_left_sent >= 0) write_slope(0,(dm_trigger_slope){0});
@@ -101,8 +100,6 @@ void dm_adaptive_trigger_set_active(int active) {
 void dm_adaptive_trigger_tick(uint64_t now) {
     if (!g_active || !dm_adaptive_trigger_available()) return;
     if (g_sampled && now >= g_sampled && now - g_sampled < 20000000ull) return;
-    // Cap the ramp after a scheduling gap; never jump straight to full load.
-    float dt = g_sampled && now >= g_sampled ? fminf((now-g_sampled)*1e-9f,.05f) : 0;
     g_sampled = now;
     shield_tick(now);
     if (!g_right_trigger || !dm_adaptive_trigger_sample) return;
@@ -122,7 +119,7 @@ void dm_adaptive_trigger_tick(uint64_t now) {
     g_shot_seen=shot.sequence;
     if (fired) {
         g_recoil_player=shot.player; g_recoil_until=now+80000000ull;
-        g_pull_player=g_pull_time=0; g_charge=0; g_cancelled=0;
+        g_pull_player=g_pull_time=0; g_cancelled=0;
     }
     if (g_recoil_until) {
         // Successful shot only: briefly push back, then unload over 80 ms.
@@ -147,27 +144,19 @@ void dm_adaptive_trigger_tick(uint64_t now) {
     }
     g_previous = bow;
     if (!valid) { if (g_pull_player) g_cancelled=1; return; }
-    if (released) { g_rearm = 0; g_charge = 0; }
+    if (released) g_rearm = 0;
     if (g_rearm) return;
     // A cancelled pull stays unloaded through release. The next slight press
     // rearms the light slope before the game's digital ZR threshold.
     if (g_cancelled) { if (released) return; g_cancelled=0; }
     if (bow.phase==DM_BOW_DRAW && !released) { g_pull_player=bow.player; g_pull_time=now; }
 
-    // Preload before the digital ZR threshold and the game's reload animation.
-    // The controller supplies the position slope locally; analog movement does
-    // not generate device writes. Only actual game charge modulates its weight.
-    float target = !released && bow.phase == DM_BOW_DRAW ? bow.charge : 0;
-    if (target <= g_charge) g_charge = target;
-    else g_charge = fminf(target, g_charge + 2.f * dt);
-    int level = (int)floorf(g_charge * 32.f + .0001f);
-    if (level == g_sent) return;
-    float q = level / 32.f;
-    // Full travel avoids the old 15% dead zone and the release beyond 85%.
-    // Keep slope feedback throughout the pull; do not stop/restart on updates.
-    // Independent of DM_RUMBLE_GAIN (handle vibration).
-    write_slope(1,(dm_trigger_slope){1,0,1,.10f + .05f*q,.35f + .20f*q});
-    g_sent = level;
+    // Arm the entire position curve while released, before digital ZR and the
+    // reload animation. The controller applies this linear slope locally:
+    // neither charge time nor polling/write latency changes its weight.
+    if (g_sent == 0) return;
+    write_slope(1,(dm_trigger_slope){1,0,1,.15f,.55f});
+    g_sent = 0;
 }
 void dm_adaptive_trigger_shutdown(void) { reset_pull(); g_closed = 1; g_active = 0; g_right_trigger = nil; g_left_trigger = nil; }
 

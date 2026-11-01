@@ -9,6 +9,9 @@ typedef struct {
     uint32_t bow_link_field, link_generation_field, owner_generation_field, owner_actor_field;
     uint32_t ready_state, reload_state;
     uint32_t shot_bow_reg; // 31 disables the optional successful-shot gate.
+    // Optional selected-ammunition inventory; zero global preserves older layouts.
+    uint32_t ammo_global, ammo_head_field, ammo_list_field;
+    uint32_t ammo_type_field, ammo_count_field, ammo_flags_field, ammo_type, ammo_limit;
 } dm_bow_layout;
 typedef int (*dm_bow_read_fn)(void *context, uint64_t address, void *out, size_t size);
 

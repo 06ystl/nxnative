@@ -9,6 +9,46 @@ static uint64_t g_base;
 static pthread_mutex_t shot_lock = PTHREAD_MUTEX_INITIALIZER;
 static dm_bow_shot g_shot;
 
+static int has_ammunition(const dm_bow_layout *l, uint64_t base, dm_bow_read_fn read, void *ctx) {
+    if (!l->ammo_global) return 1;
+    uint64_t inventory, head, item, first, again;
+    struct { uint64_t prev, next; uint32_t count; int32_t offset; } list, check;
+    uint32_t type; int32_t count; uint8_t flags[2], current[2];
+#define AMMO_READ(at, value) do { if (!read(ctx, (at), &(value), sizeof(value))) return 0; } while (0)
+    AMMO_READ(base+l->ammo_global, inventory); if (!inventory) return 0;
+    AMMO_READ(inventory+l->ammo_head_field, head); if (!head) return 0;
+    AMMO_READ(head, first); item=first; if (!item) return 0;
+    AMMO_READ(inventory+l->ammo_list_field, list);
+    if (!list.count || list.offset<0) return 0;
+    // The category is ordered by item type. Its verified capacity bounds reads
+    // without following a damaged or concurrently replaced list indefinitely.
+    for (uint32_t n=0; n<l->ammo_limit && n<list.count; n++) {
+        AMMO_READ(item+l->ammo_type_field, type);
+        if (type>l->ammo_type) return 0;
+        if (type==l->ammo_type) {
+            AMMO_READ(item+l->ammo_flags_field, flags);
+            if (flags[0] && flags[1]) {
+                AMMO_READ(item+l->ammo_count_field, count); if (count<=0) return 0;
+                AMMO_READ(item+l->ammo_type_field, type); if (type!=l->ammo_type) return 0;
+                AMMO_READ(item+l->ammo_flags_field, current);
+                if (memcmp(flags,current,sizeof flags)) return 0;
+                int32_t remaining; AMMO_READ(item+l->ammo_count_field, remaining);
+                if (remaining!=count) return 0;
+                AMMO_READ(base+l->ammo_global, again); if (again!=inventory) return 0;
+                AMMO_READ(inventory+l->ammo_head_field, again); if (again!=head) return 0;
+                AMMO_READ(head, again); if (again!=first) return 0;
+                AMMO_READ(inventory+l->ammo_list_field, check);
+                return !memcmp(&list,&check,sizeof list);
+            }
+        }
+        AMMO_READ(item+(uint32_t)list.offset+8, again);
+        if (again==inventory+l->ammo_list_field || again<(uint32_t)list.offset) return 0;
+        item=again-(uint32_t)list.offset; if (!item) return 0;
+    }
+    return 0;
+#undef AMMO_READ
+}
+
 // All copies go through the reader: the feedback queue never dereferences guest
 // pointers or invokes guest functions. Revalidate identities/state after copying
 // to reject teardown, equipment replacement and pause transitions mid-sample.
@@ -42,6 +82,7 @@ dm_bow_snapshot dm_bow_sample(const dm_bow_layout *l, uint64_t base, dm_bow_read
         READ(charge_owner + l->charge_field, charge);
         if (!isfinite(charge) || charge < 0 || charge > 1) return (dm_bow_snapshot){0};
     }
+    if (!has_ammunition(l,base,read,ctx)) return (dm_bow_snapshot){0};
     READ(base + l->mode_global, word); if (word != mode) return (dm_bow_snapshot){0};
     READ(base + l->player_info_global, again); if (again != info) return (dm_bow_snapshot){0};
     READ(info + l->player_field, again); if (again != player) return (dm_bow_snapshot){0};
@@ -108,6 +149,7 @@ int dm_bow_mac_bind(const module_t *modules, int count) {
             uint32_t globals[] = {l->mode_global, l->player_info_global, l->charge_global};
             for (size_t n = 0; n < sizeof globals / sizeof *globals; n++)
                 if (globals[n] < m->data_off || globals[n] > m->size || m->size - globals[n] < 8) return 0;
+            if (l->ammo_global && (l->ammo_global<m->data_off || l->ammo_global>m->size || m->size-l->ammo_global<8)) return 0;
             g_layout = l; g_base = (uint64_t)m->base;
             if (l->shot_bow_reg<=30 && gate_obs_present(OBS_BOW_SHOT)) gate_obs_set(OBS_BOW_SHOT,shot_gate_observe);
             LOG("Mac bow feedback: verified main %s", m->build_id);

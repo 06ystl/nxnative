@@ -203,7 +203,8 @@ an Xcode GPU capture of these passes to distinguish shader stalls from
 attachment traffic before changing them. Profiled runs are excluded from the
 throughput comparison above.
 
-The daily-use release is `塞尔达/ZeldaBreathOfTheWild-v4.21.app`. It uses the
+The v4.21 renderer is retained in the daily-use release described under
+[linear DualSense bow resistance](#linear-dualsense-bow-resistance). It uses the
 validated executable with the original bundle ID,
 `org.nxnative.01007ef00011e000`, so existing Application Support saves,
 configuration and caches remain in use. Bundled defaults are native 1440p
@@ -274,6 +275,49 @@ game resources and original save/configuration identity and verifies the
 arm64 executable and ad-hoc signature. Stable 60 fps at native 1440p remains
 open: the final external run measured 57.6 fps and render p95 19.42 ms, above
 the 16.67 ms budget. Other scenes, games and iOS were not tested.
+
+### Linear DualSense bow resistance
+
+The daily-use App is `塞尔达/ZeldaBreathOfTheWild-v4.22.app`, with the original
+bundle ID, user configuration and saves. Its renderer and 1440p defaults are
+unchanged from v4.21.
+
+R2 uses a fixed full-travel position slope, from strength 0.15 at the start to
+0.55 at the end, multiplied by the existing trigger-strength setting. It is
+preloaded while the trigger is released and a live bow with selected ammunition
+is available. Reloading and charging leave that curve unchanged; there is no
+charge-time ramp. The verified successful-shot rebound and cancellation release
+remain, as do L2 shield feedback and the shared USB audio/trigger output path.
+See [the host mechanism](../../../docs/reference/services.md#adaptive-bow-resistance-begins-after-the-trigger-is-already-pulled).
+
+The added inventory fields apply only to main build
+`cd57b23fa4bbad65803d9788c01821ee`. In its `getEquippedArrowType` at
+`main+0xd94748`, the inventory singleton is `main+0x1e18570`, the bow-category
+head field is `+0x44200`, and the item list is `+0x68`. Items have type at
+`+0x18`, count at `+0x20`, equipped/in-inventory bytes at `+0x24/+0x25`.
+Arrow type is 2; the category holds at most 14 bows and six arrow kinds.
+The host follows the selected entry, so an available stack of another arrow
+type cannot make an empty selected type feel loaded. Empty-bow animations
+observed in the earlier bow investigation still reach state 2 and charge 1;
+they now leave resistance off.
+
+Validation used two 85-second windowless native runs at 2560x1440, from
+independent copies of the same save, with the selected arrow count set to 3
+and 0. With ammunition, idle readiness was observed before the scripted R2
+press; two successful shots reduced the count from 3 to 1. With no arrows,
+all 3,466 snapshots disabled feedback, including 121 samples of the game's
+empty-bow charge state. Both processes exited 0 without red/crash lines;
+screenshots confirm HUD counts 3 and 0. Evidence is in
+`01007EF00011E000-work/linear-bow-v4.22/`. No physical controller was driven
+by those runs; the changed hand feel remains for the user to confirm.
+
+Checks: bow reader 90, adaptive output 78, shield reader 42, gamepad 118,
+USB audio/trigger coexistence 29, and profile/derived-profile tests 22 all
+pass. LLVM 23.1.4 finds no new issue in changed C/Objective-C files. Full
+Python lint still reports existing issues in unchanged files and environment
+imports; none is in the changed Python files. The broader legacy Mac
+packaging tests also encounter an invalid synthetic iconset. Those failures
+are separate from the actual release's successful build/signature checks.
 
 ## Rendering
 

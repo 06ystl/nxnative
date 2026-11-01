@@ -109,7 +109,7 @@ class MacBowProfileTests(unittest.TestCase):
         profile = game.load('01007EF00011E000')
         row = profile.values('mac_bow_state')[0]
         self.assertIn('DM_GAME_MAC_BOW_STATE', game.header(profile))
-        for field, value in [(0, '0'*32), (1, '3'), (2, '-1'), (8, '256'), (14, '0x100000000'), (15, '2'), (16, '0'), (17, '32')]:
+        for field, value in [(0, '0'*32), (1, '3'), (2, '-1'), (8, '256'), (14, '0x100000000'), (15, '2'), (16, '0'), (17, '32'), (18, '0'), (19, '3'), (25, '0'), (25, '0x100000000')]:
             with self.subTest(field=field):
                 candidate = copy.deepcopy(profile)
                 bad = row.copy(); bad[field] = value

@@ -38,22 +38,22 @@ int main(void) {@autoreleasepool {
     dm_adaptive_trigger_sample=read_bow;sample=(dm_bow_snapshot){DM_BOW_READY,0,1,2,3};
     dm_adaptive_trigger_set_active(0);tick();CHECK(!reads&&!t.writes,"ineligible game does no work");
     dm_adaptive_trigger_set_active(1);tick();
-    CHECK(t.writes==1&&t.low==.10f&&t.high==.35f,"baseline preloaded BEFORE R2 moves or game charge starts");
+    CHECK(t.writes==1&&t.low==.15f&&t.high==.55f,"linear slope preloaded BEFORE R2 moves or game charge starts");
     CHECK(t.start==0&&t.end==1,"slope covers full physical travel");
     dm_adaptive_trigger_tick(now+1000000);CHECK(reads==1,"state reads limited to 50 Hz");
     t.value=.1;tick();t.value=.3;tick();t.value=.9;tick();
     CHECK(t.writes==1,"depth response stays on hardware with no per-position writes");
-    sample.phase=DM_BOW_RELOAD;tick();CHECK(t.writes==1&&!t.stops,"reload keeps uninterrupted baseline");
+    sample.phase=DM_BOW_RELOAD;tick();CHECK(t.writes==1&&!t.stops,"reload keeps uninterrupted slope");
     sample.phase=DM_BOW_DRAW;sample.charge=1;tick();
-    CHECK(t.high>.35f&&t.high<.37f,"sudden full charge ramps from baseline");
+    CHECK(t.writes==1&&t.high==.55f,"full game charge causes no delayed force change");
+    sample.charge=0;tick();sample.charge=.5;tick();
+    CHECK(t.writes==1&&t.low==.15f&&t.high==.55f,"same linear curve throughout game charge");
     float last=t.high;
-    for(int i=0;i<25;i++){tick();CHECK(t.high>=last&&t.high-last<=.013f,"bounded monotonic charge ramp");last=t.high;}
-    CHECK(fabsf(t.high-.55f)<1e-6&&fabsf(t.low-.15f)<1e-6,"full draw holds plateau");
-    int writes=t.writes;tick();tick();CHECK(t.writes==writes&&!t.stops,"steady charge sends no writes or stop/restart");
-    t.value=0;tick();CHECK(t.high==.35f,"release immediately resets to light preload despite stale draw state");
+    int writes=t.writes;tick();tick();CHECK(t.writes==writes&&!t.stops,"held draw sends no writes or stop/restart");
+    t.value=0;tick();CHECK(t.high==.55f,"release retains the complete curve for the next pull");
     sample.phase=DM_BOW_READY;tick();t.value=1;sample.phase=DM_BOW_DRAW;tick();
-    CHECK(t.high<.37f,"next pull starts light");
-    now+=2000000000;tick();CHECK(t.high<.39f,"scheduler gap cannot jump to full force");
+    CHECK(t.high==.55f,"next pull has the identical immediate curve");
+    writes=t.writes;now+=2000000000;tick();CHECK(t.writes==writes&&t.high==.55f,"scheduler gap cannot change linear force");
     int stops=t.stops;sample.phase=DM_BOW_READY;tick();CHECK(t.stops==stops+1,"damage/cancel removes load even with stale full charge");
     writes=t.writes;tick();sample.phase=DM_BOW_DRAW;tick();CHECK(t.writes==writes,"cancelled held pull cannot revive");
     t.value=0;tick();t.value=1;tick();CHECK(t.writes>writes,"release rearms pull");
@@ -96,10 +96,10 @@ int main(void) {@autoreleasepool {
     dm_adaptive_trigger_attach((id)c);sample=(dm_bow_snapshot){DM_BOW_READY,0,1,2,3};t.value=0;left.value=0;tick();
     int native_writes=t.writes,native_stops=t.stops;
     dm_adaptive_trigger_set_usb_output(usb_output);tick();
-    CHECK(usb_writes[0]&&usb_writes[1]&&usb_effect[1].enabled&&usb_effect[1].high==.35f,"USB ownership receives the accepted bow preload parameters");
+    CHECK(usb_writes[0]&&usb_writes[1]&&usb_effect[1].enabled&&usb_effect[1].high==.55f,"USB ownership receives the accepted bow preload parameters");
     CHECK(t.writes==native_writes&&t.stops==native_stops,"entering USB never emits conflicting native trigger reports");
     sample.phase=DM_BOW_DRAW;sample.charge=1;t.value=1;tick();
-    CHECK(usb_effect[1].high>.35f&&t.writes==native_writes,"charge updates use only the shared USB report owner");
+    CHECK(usb_effect[1].high==.55f&&t.writes==native_writes,"USB keeps the same slope through charge");
     dm_adaptive_trigger_set_active(0);CHECK(!usb_effect[0].enabled&&!usb_effect[1].enabled&&t.stops==native_stops,"pause releases USB effects without native writes");
     dm_adaptive_bow_shot_sample=read_shot;
     dm_adaptive_trigger_set_active(1);sample=(dm_bow_snapshot){DM_BOW_READY,0,1,2,3};t.value=0;tick();
@@ -112,12 +112,12 @@ int main(void) {@autoreleasepool {
     for(int i=0;i<3;i++){tick();CHECK(usb_effect[1].enabled&&usb_effect[1].high<last,"rebound unloads progressively over 80 ms");last=usb_effect[1].high;}
     tick();CHECK(!usb_effect[1].enabled&&!g_recoil_until,"rebound terminates with no sticky resistance");
     sample=(dm_bow_snapshot){DM_BOW_READY,0,1,2,3};t.value=0;tick();
-    CHECK(usb_effect[1].enabled&&usb_effect[1].high==.35f,"successful shot returns to the accepted light preload");
+    CHECK(usb_effect[1].enabled&&usb_effect[1].high==.55f,"successful shot returns to the accepted light preload");
     unsigned count=usb_writes[1];tick();CHECK(usb_writes[1]==count,"one shot notification cannot retrigger the effect");
     t.value=1;sample.phase=DM_BOW_DRAW;tick();sample.phase=DM_BOW_READY;tick();
     CHECK(!usb_effect[1].enabled&&!g_recoil_until,"cancelled draw unloads directly without rebound");
     t.value=0;tick();CHECK(!usb_effect[1].enabled,"cancelled draw stays unloaded after release");
-    t.value=.03;tick();CHECK(usb_effect[1].enabled&&usb_effect[1].high==.35f,"next slight press rearms preload before digital ZR");
+    t.value=.03;tick();CHECK(usb_effect[1].enabled&&usb_effect[1].high==.55f,"next slight press rearms preload before digital ZR");
     t.value=1;sample.phase=DM_BOW_DRAW;tick();sample=(dm_bow_snapshot){0};t.value=0;tick();
     CHECK(!usb_effect[1].enabled&&!g_recoil_until,"empty bow or interrupted draw without a committed shot never rebounds");
     sample=(dm_bow_snapshot){DM_BOW_READY,0,1,2,3};tick();
@@ -141,7 +141,7 @@ int main(void) {@autoreleasepool {
     sample=(dm_bow_snapshot){DM_BOW_READY,0,1,2,3};t.value=0;
     dm_adaptive_trigger_set_active(0);
     dm_adaptive_trigger_set_usb_output(NULL);dm_adaptive_trigger_set_active(1);t.value=0;tick();
-    CHECK(t.writes==native_writes+1&&t.high==.35f,"leaving USB restores native trigger output and invalidates its cached state");
+    CHECK(t.writes==native_writes+1&&t.high==.55f,"leaving USB restores native trigger output and invalidates its cached state");
     dm_adaptive_trigger_set_usb_output(usb_output);
     dm_adaptive_trigger_set_gain(2);write_slope(1,(dm_trigger_slope){1,0,1,.2f,.4f});
     CHECK(fabsf(usb_effect[1].low-.4f)<1e-6&&fabsf(usb_effect[1].high-.8f)<1e-6,"live trigger gain scales the unified USB output");
