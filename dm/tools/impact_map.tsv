@@ -124,6 +124,7 @@ dm/host/loader.c	*:*	module loading
 dm/host/hle.c	hle:*	the HLE tables
 dm/host/front_mac.m	present:*	the Mac front end
 dm/host/dm_input.h	hle:*hid*	the shared input interface
+dm/host/bow_state_mac.*	key:mac_bow_state	read-only bow and ammunition state enabled by a verified Mac bow layout
 dm/host/motion_apple.h	hle:*SixAxisSensor*	controller motion supplied by GameController
 dm/host/pad_apple.h	hle:*hid*	controller face buttons from GameController
 dm/host/motion_fusion.h	hle:*SixAxisSensor*	six-axis motion mapping and orientation
