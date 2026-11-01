@@ -186,9 +186,8 @@ The final checks passed: `t_perf_order` 75 in each of four modes,
 `t_feedback` 88 in each encoding mode, `t_pso_opt` 84. LLVM 23.1.4
 `clang-tidy` reports no file/check pair above the repository baseline; the
 11 documentation tests pass. Scene and inventory screenshots were inspected.
-Evidence, configurations,
-per-frame TSVs and independent save copies are in
-`01007EF00011E000-work/perf-v4.21/`; the seed is
+Evidence, configurations and per-frame TSVs are in
+`01007EF00011E000-work/perf-v4.21/`; the retained baseline seed is
 `01007EF00011E000-work/qhd-v4.19/seed`.
 
 A separate timestamp profile (`prod-profile`, frames 2400, 2700, 3000, 3300)
@@ -267,8 +266,10 @@ screen comparisons. Configurations, summaries, logs and screenshots remain
 under the named run directories in `perf-v4.21`.
 
 The formal v4.21 release includes the physical-refresh fix and replaces v4.20
-in the daily-use folder. The previous package is retained outside that folder
-under `01007EF00011E000-work/release-v4.21/rollback/`. Packaging preserves the
+in the daily-use folder. After promotion, the previous package was moved to
+the system Trash for recovery. The test App, per-run pipeline caches, copied
+test saves and historical logs were removed; result records, per-frame TSVs,
+screenshots and the baseline seed remain. Packaging preserves the
 game resources and original save/configuration identity and verifies the
 arm64 executable and ad-hoc signature. Stable 60 fps at native 1440p remains
 open: the final external run measured 57.6 fps and render p95 19.42 ms, above
