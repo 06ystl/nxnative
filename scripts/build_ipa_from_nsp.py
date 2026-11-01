@@ -841,7 +841,13 @@ def derive_profile(g, pdir, ver, d, mods, app=None, shader_only=False):
     if app is not None and app != g.title_id:   # the host reports the program ID and answers save data queries for it (hle_svc.c, hle_fs.c)
         ids = {'title_id': f'title_id{T}{app:016X}', 'program_id': f'program_id{T}{(pg.npdm(d / "ExeFS/main.npdm")[1] or app):016X}'}
         out.insert(1, f'# under title ID {app:016X}, not the profile\'s {g.title_id:016X}')
+    main_build = build_id(d / 'ExeFS/main') if not shader_only and (d / 'ExeFS/main').is_file() else None
+    mac_layouts = {'mac_audio_events', 'mac_audio_footsteps', 'mac_bow_state', 'mac_shield_state',
+                   'mac_resolution_patch', 'mac_cheat_patch', 'mac_frame_step', 'mac_frame_guard'}
     for line in (g.dir / 'game.tsv').read_text(encoding='utf-8').splitlines():
+        fields = line.split(T)
+        if not shader_only and fields[0] in mac_layouts and (len(fields)<2 or fields[1]!=main_build):
+            continue
         if line.split(T, 1)[0] in ids: out.append(ids[line.split(T, 1)[0]]); continue
         if not shader_only and line.split(T, 1)[0] in ('build', 'package', 'shader_versions'):
             if not put: out += [row, f'package{T}{ver}', f'shader_versions{T}{ver}']; put = True
